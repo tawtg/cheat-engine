@@ -19,6 +19,7 @@ uses
 type
   Tcoderecord = class
   public
+    addressString: string;
     address: ptrUint;
     size: integer;
     opcode: string;
@@ -67,6 +68,7 @@ type
   TFoundCodeDialog = class(TForm)
     FoundCodeList: TListView;
     fcdImageList: TImageList;
+    dbvmMissedEntries: TLabel;
     MenuItem1: TMenuItem;
     MenuItem2: TMenuItem;
     miFindWhatAccesses: TMenuItem;
@@ -91,6 +93,7 @@ type
     N1: TMenuItem;
     Copyselectiontoclipboard1: TMenuItem;
     Splitter1: TSplitter;
+    timerAddressStringLookup: TTimer;
     procedure FormCreate(Sender: TObject);
     procedure FormDeactivate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
@@ -114,6 +117,7 @@ type
     procedure miSaveTofileClick(Sender: TObject);
     procedure pmOptionsPopup(Sender: TObject);
     procedure Copyselectiontoclipboard1Click(Sender: TObject);
+    procedure timerAddressStringLookupTimer(Sender: TObject);
   private
     { Private declarations }
     setcountwidth: boolean;
@@ -157,7 +161,7 @@ implementation
 
 uses CEFuncProc, CEDebugger,debughelper, debugeventhandler, MemoryBrowserFormUnit,
      MainUnit,kerneldebugger, AdvancedOptionsUnit ,formFoundcodeListExtraUnit,
-     MainUnit2, ProcessHandlerUnit, Globals, Parsers, DBK32functions;
+     MainUnit2, ProcessHandlerUnit, Globals, Parsers, DBK32functions, symbolhandler;
 
 
 
@@ -179,14 +183,14 @@ begin
       i:=dbvm_watch_retrievelog(id, results, size);
       if i=0 then
       begin
-        OutputDebugString('TDBVMWatchPollThread returned 0');
-        OutputDebugString('results^.numberOfEntries='+inttostr(results^.numberOfEntries));
-        OutputDebugString('results^.maxSize='+inttostr(results^.maxSize));
+      //  OutputDebugString('TDBVMWatchPollThread returned 0');
+      //  OutputDebugString('results^.numberOfEntries='+inttostr(results^.numberOfEntries));
+      //  OutputDebugString('results^.maxSize='+inttostr(results^.maxSize));
 
         //process data
         if results^.numberOfEntries>0 then
         begin
-          OutputDebugString('calling addEntriesToList');
+      //    OutputDebugString('calling addEntriesToList');
           synchronize(addEntriesToList);
           sleep(10);
         end
@@ -197,7 +201,7 @@ begin
       if i=2 then
       begin
         //not enough memory. Allocate twice the needed amount
-        outputdebugstring(inttostr(resultsize)+' is too small for the buffer. It needs to be at least '+inttostr(size));
+     //   outputdebugstring(inttostr(resultsize)+' is too small for the buffer. It needs to be at least '+inttostr(size));
         freememandnil(results);
 
 
@@ -264,6 +268,14 @@ var
   debug,debug2: pointer;
 begin
   outputdebugstring('addEntriesToList');
+
+  if results^.missedEntries>0 then
+  begin
+    fcd.dbvmMissedEntries.caption:=string.format(rsDBVMMissedEntries, [results^.missedEntries]);
+    if fcd.dbvmMissedEntries.visible=false then
+      fcd.dbvmMissedEntries.visible:=true;
+  end;
+
 
   try
     basic:=PPageEventBasicArray(ptruint(results)+sizeof(TPageEventListDescriptor));
@@ -665,6 +677,8 @@ begin
 
   minfo.Lines.BeginUpdate;
   try
+    if coderecord.addressString<>'' then minfo.Lines.add(coderecord.addressString+':');
+
     minfo.Lines.Add(disassembled[1]);
     minfo.Lines.Add(disassembled[2]);
     minfo.Lines.Add(disassembled[3]+' <<');
@@ -862,8 +876,8 @@ begin
 
     with FormFoundCodeListExtra do
     begin
-      Label1.Caption:=disassembled[1].s;
-      Label1.tag:=disassembled[1].a;
+      dbvmMissedEntries.Caption:=disassembled[1].s;
+      dbvmMissedEntries.tag:=disassembled[1].a;
 
       Label2.Caption:=disassembled[2].s;
       Label2.tag:=disassembled[2].a;
@@ -1590,6 +1604,24 @@ end;
 procedure TFoundCodeDialog.Copyselectiontoclipboard1Click(Sender: TObject);
 begin
   clipboard.AsText:=getSelection;
+end;
+
+procedure TFoundCodeDialog.timerAddressStringLookupTimer(Sender: TObject);
+var
+  i: integer;
+  starttime: qword;
+  c: FoundCodeUnit.TCodeRecord;
+begin
+  starttime:=GetTickCount64;
+  for i:=0 to foundcodelist.Items.Count-1 do
+  begin
+    c:=FoundCodeUnit.TCodeRecord(foundcodelist.items[i].data);
+    if c.addressString='' then
+      c.addressString:=symhandler.getNameFromAddress(c.address);
+
+
+    if gettickcount64-starttime>250 then break; //next time better
+  end;
 end;
 
 initialization

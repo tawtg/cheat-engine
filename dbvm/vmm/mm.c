@@ -10,6 +10,7 @@ Just used for basic initialization allocation, frees shouldn't happen too often
 #include "multicore.h"
 #include "common.h"
 #include "vmmhelper.h"
+#include "displaydebug.h"
 
 //#define sendstringf(s,x...)
 //#define sendstring(s)
@@ -52,11 +53,13 @@ PPDPTE_PAE pagedirptrtables=(PPDPTE_PAE)0xffffffffffe00000ULL;
 PPDE_PAE      pagedirtables=  (PPDE_PAE)0xffffffffc0000000ULL;
 PPTE_PAE         pagetables=  (PPTE_PAE)0xffffff8000000000ULL;
 
+
+
 QWORD FirstFreeAddress;
 
 unsigned char MAXPHYADDR=0; //number of bits a physical address can be made up of
 QWORD MAXPHYADDRMASK=  0x0000000fffffffffULL; //mask to AND with a physical address to strip invalid bits
-QWORD MAXPHYADDRMASKPB=0x0000000ffffff000ULL; //same as MAXPHYADDRMASK but also aligns it to a page boundary
+QWORD MAXPHYADDRMASKPB=0x0000000ffffff000ULL; //same as MAXPHYADDRMASK but also aligns it to a page boundary1F4E20
 
 
 //alloc(not 2) keeps a list of allocs and their sizes.  This linked list (allocated using alloc2) is used to keep track of those allocs. Sorted by base
@@ -359,7 +362,7 @@ int mmFindMapPositionForSize(pcpuinfo cpuinfo, int size)
         j++;
 
         if (j>=1024)
-          break; //not enough space left
+          return -1;
       }
 
       if (needed==0)
@@ -585,7 +588,8 @@ void unmapPhysicalMemoryGlobal(void *virtualaddress, int size)
   else
   {
     sendstringf("invalid global address (%6) given to unmapPhysicalMemoryGlobal\n",virtualaddress);
-    while (1);
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+    while (1) outportb(0x80,0xcd);
   }
 
 
@@ -608,7 +612,8 @@ void unmapPhysicalMemory(void *virtualaddress, int size)
   if ((pos<0) || (pos>1024))
   {
     sendstringf("%d: invalid address given to unmapPhysicalMemory (%6)\n",c->cpunr, virtualaddress);
-    while (1);
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+    while (1) outportb(0x80,0xce);
   }
 
   int i;
@@ -742,8 +747,9 @@ void *addPhysicalPageToDBVM(QWORD address)
 
   if (pagetableentry->P)
   {
-    sendstringf("Assertion failure. Virtual address %6 was already present\n", VirtualAddress);
-    while (1);
+    sendstringf("!Assertion failure! Virtual address %6 was already present (PhysicalPageListSize=%d)\n", VirtualAddress, PhysicalPageListSize);
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+    while (1) outportb(0x80,0xcf);
   }
 
   *(QWORD *)pagetableentry=address;
@@ -974,8 +980,10 @@ void *malloc2(unsigned int size)
   }
 
   sendstring("OUT OF MEMORY\n");
-  while (1)
-    jtagbp();
+  ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+
+  while (1) outportb(0x80,0xd0);
+
 
   return NULL; //still here so no memory allocated
 }
@@ -1117,7 +1125,8 @@ void *realloc(void *old, size_t size)
   else
   {
     sendstringf("realloc error\n");
-    while (1) ;
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+    while (1) outportb(0x80,0xd1);
   }
 }
 
@@ -1227,7 +1236,8 @@ void InitializeMM(UINT64 FirstFreeVirtualAddress)
   if (pagedirlvl4[pml4index].P) //pml4index should be 511
   {
     sendstring("Assertion failed. pagedirlvl4[pml4index].P is not 0. It should be\n");
-    while (1);
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+    while (1) outportb(0x80,0xd1);
   }
   *(QWORD*)(&pagedirlvl4[pml4index])=getCR3();
   pagedirlvl4[pml4index].P=1;
@@ -1235,6 +1245,7 @@ void InitializeMM(UINT64 FirstFreeVirtualAddress)
   asm volatile ("": : :"memory");
   _invlpg(0xffffff8000000000ULL);
   //now I have access to all the paging info
+
 
   sendstring("Allocating the AllocationInfoList\n");
   //allocate memory for AllocationInfoList and map it at BASE_VIRTUAL_ADDRESS
@@ -1408,9 +1419,15 @@ UINT64 VirtualToPhysical(void* address)
 
 
   if (pagedescriptor->PS)
-    r=*(UINT64 *)pagedescriptor & 0xffffffffffffe000ULL;
+  {
+    r=*(UINT64 *)pagedescriptor & 0xffffffffffe00000ULL;
+    r=r | ((UINT64)address & 0x1fffff);
+  }
   else
+  {
     r=*(UINT64 *)pagedescriptor & 0xfffffffffffff000ULL;
+    r=r | ((UINT64)address & 0xfff);
+  }
 
   return r;
 }

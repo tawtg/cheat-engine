@@ -7,6 +7,7 @@
 
 #define MAXCLOAKLISTBEFORETRANFERTOMAP 40
 
+//#define MEMORYCHECK
 
 #include "epthandler.h"
 #include "main.h"
@@ -19,6 +20,8 @@
 #include "maps.h"
 #include "list.h"
 #include "vmeventhandler.h"
+#include "displaydebug.h"
+#include "nphandler.h"
 
 QWORD EPTMapPhysicalMemory(pcpuinfo currentcpuinfo, QWORD physicalAddress, int forcesmallpage);
 
@@ -31,6 +34,7 @@ int eptWatchListPos;
 criticalSection CloakedPagesCS; //1
 PAddressList CloakedPagesList; //up to 40 entries can be found in 5 steps (worst case scenario)
 PMapInfo CloakedPagesMap; //can be found in 5 steps, always (and eats memory) , so if CloakedPagesPos>40 then start using this (and move the old list over)
+//todo: Create a MapList object that combines both into one
 
 
 
@@ -39,6 +43,19 @@ criticalSection ChangeRegBPListCS; //2
 ChangeRegBPEntry *ChangeRegBPList;
 int ChangeRegBPListSize;
 int ChangeRegBPListPos;
+
+#ifdef MEMORYCHECK
+int checkmem(unsigned char *x, int len)
+{
+  int i;
+  for (i=0; i<len; i++)
+    if (x[i]!=0xce)
+      return 1;
+
+  return 0;
+
+}
+#endif
 
 void vpid_invalidate()
 {
@@ -52,23 +69,35 @@ void vpid_invalidate()
 
 void ept_invalidate()
 {
-	INVEPTDESCRIPTOR eptd;
-	eptd.Zero=0;
-	eptd.EPTPointer=getcpuinfo()->EPTPML4;
+  if (isAMD)
+  {
+    pcpuinfo c=getcpuinfo();
+    c->vmcb->VMCB_CLEAN_BITS&=~(1 << 4);
+    c->vmcb->TLB_CONTROL=1;
 
-	if (has_EPT_INVEPTAllContext)
-	{
-		_invept(2, &eptd);
-	}
-	else
-	if (has_EPT_INVEPTSingleContext)
-	{
-		_invept(1, &eptd);
-	}
-	else
-	{
-		_invept(2, &eptd);//fuck it
-	}
+
+  }
+  else
+  {
+    //Intel
+    INVEPTDESCRIPTOR eptd;
+    eptd.Zero=0;
+    eptd.EPTPointer=getcpuinfo()->EPTPML4;
+
+    if (has_EPT_INVEPTAllContext)
+    {
+      _invept(2, &eptd);
+    }
+    else
+    if (has_EPT_INVEPTSingleContext)
+    {
+      _invept(1, &eptd);
+    }
+    else
+    {
+      _invept(2, &eptd);//fuck it
+    }
+  }
 
 	//vpid_invalidate();
 }
@@ -126,12 +155,61 @@ BOOL ept_handleCloakEvent(pcpuinfo currentcpuinfo, QWORD Address, QWORD AddressV
   if ((CloakedPagesList==NULL) && (CloakedPagesMap==NULL))
     return FALSE;
 
+  if (isAMD) //AMD marks the page as no-execute only, no read/write block
+  {
+    NP_VIOLATION_INFO nvi;
+    nvi.ErrorCode=currentcpuinfo->vmcb->EXITINFO1;
+    if (nvi.ID==0)
+      return FALSE; //not an execute pagefault. Not a cloak for AMD
+
+    if (currentcpuinfo->NP_Cloak.ActiveRegion)
+    {
+
+      cloakdata=currentcpuinfo->NP_Cloak.ActiveRegion;
+     // sendstringf("Inside a cloaked region using mode 1 (which started in %6) and an execute fault happened (CS:RIP=%x:%6)\n", currentcpuinfo->NP_Cloak.LastCloakedVirtualBase, currentcpuinfo->vmcb->cs_selector, currentcpuinfo->vmcb->RIP);
+
+      //means we exited the cloaked page (or at the page boundary)
+
+      csEnter(&CloakedPagesCS);
+      NPMode1CloakSetState(currentcpuinfo, 0); //marks all pages back as executable and the stealthed page(s) back as no execute
+      csLeave(&CloakedPagesCS);
+
+      //check if it's a page boundary
+     // QWORD currentexecbase=currentcpuinfo->vmcb->RIP & 0xffffffffffff000ULL;
+
+      if  (((currentcpuinfo->vmcb->RIP<currentcpuinfo->NP_Cloak.LastCloakedVirtualBase) &&
+          ((currentcpuinfo->vmcb->RIP+32)>=currentcpuinfo->NP_Cloak.LastCloakedVirtualBase))
+        ||
+        ((currentcpuinfo->vmcb->RIP>=currentcpuinfo->NP_Cloak.LastCloakedVirtualBase+4096) &&
+         (currentcpuinfo->vmcb->RIP<=currentcpuinfo->NP_Cloak.LastCloakedVirtualBase+4096+32)))
+      {
+        sendstringf("Pageboundary. Do a single step with the cloaked page decloaked\n");
+
+        //page boundary. Do a single step with the cloaked page executable
+        *(QWORD *)(cloakdata->npentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressExecutable;
+        cloakdata->npentry[currentcpuinfo->cpunr]->P=1;
+        cloakdata->npentry[currentcpuinfo->cpunr]->RW=1;
+        cloakdata->npentry[currentcpuinfo->cpunr]->US=1;
+        cloakdata->npentry[currentcpuinfo->cpunr]->EXB=0;
+
+        vmx_enableSingleStepMode();
+        vmx_addSingleSteppingReasonEx(currentcpuinfo, 2,cloakdata);
+      }
+
+      currentcpuinfo->NP_Cloak.ActiveRegion=NULL;
+      ept_invalidate();
+
+
+      return TRUE;
+    }
+  }
+
+
   csEnter(&CloakedPagesCS);
   if (CloakedPagesMap)
     cloakdata=map_getEntry(CloakedPagesMap, BaseAddress);
   else
     cloakdata=addresslist_find(CloakedPagesList, BaseAddress);
-
 
   if (cloakdata)
   {
@@ -139,77 +217,110 @@ BOOL ept_handleCloakEvent(pcpuinfo currentcpuinfo, QWORD Address, QWORD AddressV
 
 
     //it's a cloaked page
-    int isMegaJmp=0;
-    QWORD RIP=vmread(vm_guest_rip);
+    //sendstringf("ept_handleCloakEvent on the target(CS:RIP=%x:%6)\n", currentcpuinfo->vmcb->cs_selector, currentcpuinfo->vmcb->RIP);
 
-    EPT_VIOLATION_INFO evi;
-    evi.ExitQualification=vmread(vm_exit_qualification);
-
-    sendstringf("ept_handleCloakEvent on the target\n");
-
-    //todo: keep a special list for physical address regions that can see 'the truth' (e.g ntoskrnl.exe and hal.dll on exported data pointers, but anything else will see the fake pointers)
-    //todo2: inverse cloak, always shows the real data except the list of physical address regions provided
-
-    //check for megajmp edits
-    //megajmp: ff 25 00 00 00 00 <address>
-    //So, if 6 bytes before the given address is ff 25 00 00 00 00 , it's a megajmp, IF the RIP is 6 bytes before the given address (and the bytes have changed from original)
-
-    if ((AddressVA-RIP)==6)
+    if (isAMD)
     {
-      //check if the bytes have been changed here
-      DWORD offset=RIP & 0xfff;
-      int size=min(14,0x1000-offset);
+      //AMD handling
+      //swap the page and make it executable,
+      *(QWORD *)(cloakdata->npentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressExecutable;
+      cloakdata->npentry[currentcpuinfo->cpunr]->P=1;
+      cloakdata->npentry[currentcpuinfo->cpunr]->RW=1;
+      cloakdata->npentry[currentcpuinfo->cpunr]->US=1;
+      cloakdata->npentry[currentcpuinfo->cpunr]->EXB=0;
 
-      unsigned char *new=(unsigned char *)((QWORD)cloakdata->Executable+offset);
-      unsigned char *original=(unsigned char *)((QWORD)cloakdata->Data+offset);
-
-
-      if (new[0]==0xff) //starts with 0xff, so very likely, inspect more
+      if (cloakdata->CloakMode==0)
       {
-        if (memcmp(new, original, size))
-        {
-          //the memory in this range got changed, check if it's a full megajmp
-          unsigned char megajmpbytes[6]={0xff,0x25,0x00,0x00,0x00,0x00};
-
-          if (memcmp(new, megajmpbytes, min(6,size))==0)
-          {
-            sendstring("Is megajmp");
-            isMegaJmp=1;
-          }
-
-        }
-      }
-    }
-
-
-    //Check if this page has had a MEGAJUMP code edit, if so, check if this is a megajump and in that case on executable
-
-
-    if (evi.X) //looks like this cpu does not support execute only
-      *(QWORD *)(cloakdata->eptentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressExecutable;
-    else
-    {
-      if (isMegaJmp==0)
-      {
-        //read/write the data
-        *(QWORD *)(cloakdata->eptentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressData;
+        //do one step, and restore back to non-executable
+        vmx_enableSingleStepMode();
+        vmx_addSingleSteppingReasonEx(currentcpuinfo, 2,cloakdata);
       }
       else
       {
-        //read the executable code
-        *(QWORD *)(cloakdata->eptentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressExecutable;
+        //mark all pages as no execute except this one (and any potential still waiting to step cloak events)
+        currentcpuinfo->NP_Cloak.ActiveRegion=cloakdata;
+        currentcpuinfo->NP_Cloak.LastCloakedVirtualBase=currentcpuinfo->vmcb->RIP & 0xffffffffffff000ULL;
+        NPMode1CloakSetState(currentcpuinfo, 1);
       }
 
     }
-    cloakdata->eptentry[currentcpuinfo->cpunr]->WA=1;
-    cloakdata->eptentry[currentcpuinfo->cpunr]->RA=1;
-    cloakdata->eptentry[currentcpuinfo->cpunr]->XA=1;
+    else
+    {
+      //Intel handling
+      EPT_VIOLATION_INFO evi;
+      evi.ExitQualification=vmread(vm_exit_qualification);
 
-    vmx_enableSingleStepMode();
-    vmx_addSingleSteppingReasonEx(currentcpuinfo, 2,cloakdata);
+      int isMegaJmp=0;
+      QWORD RIP;
 
-    currentcpuinfo->eptCloak_LastOperationWasWrite=evi.W;
-    currentcpuinfo->eptCloak_LastWriteOffset=Address & 0xfff;
+      if (!isAMD)
+        RIP=vmread(vm_guest_rip);
+
+      //todo: keep a special list for physical address regions that can see 'the truth' (e.g ntoskrnl.exe and hal.dll on exported data pointers, but anything else will see the fake pointers)
+      //todo2: inverse cloak, always shows the real data except the list of physical address regions provided
+
+      //check for megajmp edits
+      //megajmp: ff 25 00 00 00 00 <address>
+      //So, if 6 bytes before the given address is ff 25 00 00 00 00 , it's a megajmp, IF the RIP is 6 bytes before the given address (and the bytes have changed from original)
+
+      if ((AddressVA-RIP)==6)
+      {
+        //check if the bytes have been changed here
+        DWORD offset=RIP & 0xfff;
+        int size=min(14,0x1000-offset);
+
+        unsigned char *new=(unsigned char *)((QWORD)cloakdata->Executable+offset);
+        unsigned char *original=(unsigned char *)((QWORD)cloakdata->Data+offset);
+
+
+        if (new[0]==0xff) //starts with 0xff, so very likely, inspect more
+        {
+          if (memcmp(new, original, size))
+          {
+            //the memory in this range got changed, check if it's a full megajmp
+            unsigned char megajmpbytes[6]={0xff,0x25,0x00,0x00,0x00,0x00};
+
+            if (memcmp(new, megajmpbytes, min(6,size))==0)
+            {
+              sendstring("Is megajmp");
+              isMegaJmp=1;
+            }
+
+          }
+        }
+      }
+
+
+
+      //Check if this page has had a MEGAJUMP code edit, if so, check if this is a megajump and in that case on executable
+      if (evi.X) //looks like this cpu does not support execute only
+        *(QWORD *)(cloakdata->eptentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressExecutable;
+      else
+      {
+        if (isMegaJmp==0)
+        {
+          //read/write the data
+          *(QWORD *)(cloakdata->eptentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressData;
+        }
+        else
+        {
+          //read the executable code
+          *(QWORD *)(cloakdata->eptentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressExecutable;
+        }
+
+      }
+      cloakdata->eptentry[currentcpuinfo->cpunr]->WA=1;
+      cloakdata->eptentry[currentcpuinfo->cpunr]->RA=1;
+      cloakdata->eptentry[currentcpuinfo->cpunr]->XA=1;
+
+      vmx_enableSingleStepMode();
+      vmx_addSingleSteppingReasonEx(currentcpuinfo, 2,cloakdata);
+
+      currentcpuinfo->eptCloak_LastOperationWasWrite=evi.W;
+      currentcpuinfo->eptCloak_LastWriteOffset=Address & 0xfff;
+    }
+
+
 
     result=TRUE;
 
@@ -244,13 +355,21 @@ int ept_handleCloakEventAfterStep(pcpuinfo currentcpuinfo,  PCloakedPageData clo
 
   csEnter(&currentcpuinfo->EPTPML4CS);
 
-  *(QWORD *)(cloakdata->eptentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressExecutable; //back to the executable state
-  cloakdata->eptentry[currentcpuinfo->cpunr]->WA=0;
-  cloakdata->eptentry[currentcpuinfo->cpunr]->RA=0;
-  if (has_EPT_ExecuteOnlySupport)
-    cloakdata->eptentry[currentcpuinfo->cpunr]->XA=1;
+  if (isAMD)
+  {
+    *(QWORD *)(cloakdata->npentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressData; //back to the non-executable state
+    cloakdata->npentry[currentcpuinfo->cpunr]->EXB=1;
+  }
   else
-    cloakdata->eptentry[currentcpuinfo->cpunr]->XA=0;
+  {
+    *(QWORD *)(cloakdata->eptentry[currentcpuinfo->cpunr])=cloakdata->PhysicalAddressExecutable; //back to the executable state
+    cloakdata->eptentry[currentcpuinfo->cpunr]->WA=0;
+    cloakdata->eptentry[currentcpuinfo->cpunr]->RA=0;
+    if (has_EPT_ExecuteOnlySupport)
+      cloakdata->eptentry[currentcpuinfo->cpunr]->XA=1;
+    else
+      cloakdata->eptentry[currentcpuinfo->cpunr]->XA=0;
+  }
   csLeave(&currentcpuinfo->EPTPML4CS);
 
 
@@ -263,13 +382,13 @@ int ept_handleCloakEventAfterStep(pcpuinfo currentcpuinfo,  PCloakedPageData clo
 }
 
 
-int ept_cloak_activate(QWORD physicalAddress)
+int ept_cloak_activate(QWORD physicalAddress, int mode)
 {
   int i;
   QWORD address;
   PCloakedPageData data;
 
-  sendstringf("ept_cloak_activate(%6)\n", physicalAddress);
+  sendstringf("ept_cloak_activate(%6,%d)\n", physicalAddress, mode);
 
   physicalAddress=physicalAddress & MAXPHYADDRMASKPB;
   csEnter(&CloakedPagesCS);
@@ -328,15 +447,42 @@ int ept_cloak_activate(QWORD physicalAddress)
   cloakdata->Data=malloc(4096);
 
   copymem(cloakdata->Data, cloakdata->Executable, 4096);
+
+
   cloakdata->PhysicalAddressExecutable=physicalAddress;
   cloakdata->PhysicalAddressData=VirtualToPhysical(cloakdata->Data);
+
+  //Intel. The page is unreadable. Reads cause a fault and then get handled by a single step, executes run the modified code with no exception (fastest way possible)
+  //In case Execute but no read is not supported single step through the whole page (slow)
+  //Mode is ignored
+
+  //AMD: The page is readable but non-executable
+  //On execute the page gets swapped out with the modified one and made executable
+  //mode 0: For every address make it executable, do a single step, and then made back to non-executable (see execute watch)
+  //mode 1: All other pages will be made non-executable (511 PTE's 511 PDE, 511 PDPTE and 511 PML4's need to be made non-executable: 2044 entries )
+  //        until a npf happens.
+  //        Boundary situation: Do a single step when at an instruction that spans both pages
+  //may mode 2?:same as mode 1 but instead of adjusting 2044 entries swap the NP pointer to a pagesystem with only that one executable page. And on memory access outside map them in as usual (as non executable) unless it's a sidepage
+  //            pro: Faster after a few runs. con: eats up a ton more memory
+
+  // Downside compared to Intel: Cloaked pages can see their own page as edited
+
+  cloakdata->CloakMode=mode;
+
+
 
   //map in the physical address descriptor for all CPU's as execute only
   pcpuinfo currentcpuinfo=firstcpuinfo;
 
+  //lock ANY other CPU from triggering (a cpu could trigger before this routine is done)
+
+
+  sendstringf("Cloaking memory (initiated by cpu %d) \n", getcpunr());
+
   while (currentcpuinfo)
   {
     int cpunr=currentcpuinfo->cpunr;
+    sendstringf("cloaking cpu %d\n", cpunr);
 
     if (cpunr>=cpucount)
     {
@@ -347,23 +493,56 @@ int ept_cloak_activate(QWORD physicalAddress)
 
     csEnter(&currentcpuinfo->EPTPML4CS);
 
-    QWORD PA=EPTMapPhysicalMemory(currentcpuinfo, physicalAddress, 1);
+    currentcpuinfo->eptUpdated=1;
+
+
+    QWORD PA;
+
+    if (isAMD)
+      PA=NPMapPhysicalMemory(currentcpuinfo, physicalAddress, 1);
+    else
+      PA=EPTMapPhysicalMemory(currentcpuinfo, physicalAddress, 1);
+
+    sendstringf("%d Cloak: After mapping the page as a 4KB page\n", cpunr);
+
     cloakdata->eptentry[cpunr]=mapPhysicalMemoryGlobal(PA, sizeof(EPT_PTE));
 
-    //make it nonreadable
-    EPT_PTE temp=*(cloakdata->eptentry[cpunr]);
-    if (has_EPT_ExecuteOnlySupport)
-      temp.XA=1;
+    sendstringf("%d Cloak old entry is %6\n", cpunr,  *(QWORD*)(cloakdata->eptentry[cpunr]));
+
+
+    if (isAMD)
+    {
+      //Make it non-executable, and make the data read be the fake data
+      _PTE_PAE temp;
+      temp=*((PPTE_PAE)&cloakdata->PhysicalAddressData); //read data
+
+      temp.P=1;
+      temp.RW=1;
+      temp.US=1;
+      temp.EXB=1; //disable execute
+
+      *(PPTE_PAE)(cloakdata->eptentry[cpunr])=temp;
+    }
     else
-      temp.XA=0; //going to be slow
+    {
+      //make it nonreadable
+      EPT_PTE temp=*(cloakdata->eptentry[cpunr]);
+      if (has_EPT_ExecuteOnlySupport)
+        temp.XA=1;
+      else
+        temp.XA=0; //going to be slow
 
-    temp.RA=0;
-    temp.WA=0;
+      temp.RA=0;
+      temp.WA=0;
 
-    *(cloakdata->eptentry[cpunr])=temp;
+      *(cloakdata->eptentry[cpunr])=temp;
+    }
+
+    sendstringf("%d Cloak new entry is %6\n", cpunr, *(QWORD*)(cloakdata->eptentry[cpunr]));
+
 
     _wbinvd();
-    currentcpuinfo->eptUpdated=1;
+    currentcpuinfo->eptUpdated=1; //set this before unlock, so if a NP exception happens before the next vmexit is handled it knows not to remap it with full access
 
     csLeave(&currentcpuinfo->EPTPML4CS);
 
@@ -375,9 +554,9 @@ int ept_cloak_activate(QWORD physicalAddress)
   else
     addresslist_add(CloakedPagesList, physicalAddress, (void*)cloakdata);
 
+  sendstringf("Invalidating ept\n");
 
   ept_invalidate();
-
 
   csLeave(&CloakedPagesCS);
   return 0;
@@ -450,6 +629,7 @@ int ept_cloak_deactivate(QWORD physicalAddress)
 }
 
 int ept_cloak_readOriginal(pcpuinfo currentcpuinfo,  VMRegisters *registers, QWORD physicalAddress, QWORD destination)
+/* Called by vmcall */
 {
   int error;
   physicalAddress=physicalAddress & MAXPHYADDRMASKPB;
@@ -479,14 +659,28 @@ int ept_cloak_readOriginal(pcpuinfo currentcpuinfo,  VMRegisters *registers, QWO
     unmapPhysicalMemory(src,4096);
   }
   else
+  {
     registers->rax=1;
+  }
+
+  if (isAMD)
+    currentcpuinfo->vmcb->RAX= registers->rax;
 
   csLeave(&CloakedPagesCS);
 
   unmapVMmemory(dest,4096);
 
 
-  vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+  if (isAMD)
+  {
+    if (AMD_hasNRIPS)
+      currentcpuinfo->vmcb->RIP=currentcpuinfo->vmcb->nRIP;
+    else
+      currentcpuinfo->vmcb->RIP+=3;
+  }
+  else
+    vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+
   return 0;
 }
 
@@ -494,6 +688,9 @@ int ept_cloak_writeOriginal(pcpuinfo currentcpuinfo,  VMRegisters *registers, QW
 {
   int error;
   physicalAddress=physicalAddress & MAXPHYADDRMASKPB;
+
+  nosendchar[getAPICID()]=0;
+  sendstring("ept_cloak_writeOriginal");
 
   QWORD pagefault;
 
@@ -513,6 +710,12 @@ int ept_cloak_writeOriginal(pcpuinfo currentcpuinfo,  VMRegisters *registers, QW
   if (cloakdata)
   {
     void *dest=mapPhysicalMemory(cloakdata->PhysicalAddressExecutable, 4096);
+
+    sendstringf("cloakdata->PhysicalAddressExecutable=%6\n", cloakdata->PhysicalAddressExecutable);
+    sendstringf("cloakdata->PhysicalAddressData=%6\n", cloakdata->PhysicalAddressData);
+
+
+    sendstringf("Writing to PA %6\n", cloakdata->PhysicalAddressExecutable);
     copymem(dest,src,4096);
     registers->rax=0;
 
@@ -522,12 +725,24 @@ int ept_cloak_writeOriginal(pcpuinfo currentcpuinfo,  VMRegisters *registers, QW
   else
     registers->rax=1;
 
+  if (isAMD)
+    currentcpuinfo->vmcb->RAX= registers->rax;
+
   csLeave(&CloakedPagesCS);
 
   unmapVMmemory(src,4096);
 
 
-  vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+  if (isAMD)
+  {
+    if (AMD_hasNRIPS)
+      currentcpuinfo->vmcb->RIP=currentcpuinfo->vmcb->nRIP;
+    else
+      currentcpuinfo->vmcb->RIP+=3;
+  }
+  else
+    vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+
   return 0;
 }
 
@@ -539,7 +754,7 @@ int ept_cloak_changeregonbp(QWORD physicalAddress, PCHANGEREGONBPINFO changeregi
   ept_cloak_removechangeregonbp(physicalAddress);
 
   QWORD physicalBase=physicalAddress & MAXPHYADDRMASKPB;
-  ept_cloak_activate(physicalBase); //just making sure
+  ept_cloak_activate(physicalBase,0); //just making sure
 
   sendstringf("ept_cloak_changeregonbp:\n");
   sendstringf("  changeRAX:%d\n", changereginfo->Flags.changeRAX);
@@ -660,6 +875,10 @@ int ept_cloak_removechangeregonbp(QWORD physicalAddress)
       unsigned char *executable=(unsigned char *)ChangeRegBPList[i].cloakdata->Executable;
       executable[physicalAddress & 0xfff]=ChangeRegBPList[i].originalbyte;
       ChangeRegBPList[i].Active=0;
+
+      /*  _wbinvd();
+      vpid_invalidate();
+      ept_invalidate();*/
       result=0;
     }
   }
@@ -670,7 +889,7 @@ int ept_cloak_removechangeregonbp(QWORD physicalAddress)
   return result;
 }
 
-BOOL ept_handleSoftwareBreakpoint(pcpuinfo currentcpuinfo, VMRegisters *vmregisters)
+BOOL ept_handleSoftwareBreakpoint(pcpuinfo currentcpuinfo, VMRegisters *vmregisters, FXSAVE64 *fxsave)
 {
   //check if it is a cloaked instruction
   int i;
@@ -717,6 +936,42 @@ BOOL ept_handleSoftwareBreakpoint(pcpuinfo currentcpuinfo, VMRegisters *vmregist
           if (ChangeRegBPList[i].changereginfo.Flags.changeR13) vmregisters->r13=ChangeRegBPList[i].changereginfo.newR13;
           if (ChangeRegBPList[i].changereginfo.Flags.changeR14) vmregisters->r14=ChangeRegBPList[i].changereginfo.newR14;
           if (ChangeRegBPList[i].changereginfo.Flags.changeR15) vmregisters->r15=ChangeRegBPList[i].changereginfo.newR15;
+
+          if (ChangeRegBPList[i].changereginfo.changeFP)
+          {
+            int r;
+            for (r=0; r<8; r++)
+              if (ChangeRegBPList[i].changereginfo.changeFP & (1<<r))
+              {
+                copymem((void*)((QWORD)(&fxsave->FP_MM0)+10*r), (void*)((QWORD)(&fxsave->FP_MM0)+10*r),10);
+              }
+
+          }
+
+
+          if (ChangeRegBPList[i].changereginfo.changeXMM)
+          {
+            int r;
+            for (r=0; r<15; r++)
+            {
+              BYTE mask=(ChangeRegBPList[i].changereginfo.changeXMM >> (4*r)) & 0xf;
+              if (mask)
+              {
+                DWORD *destparts=(DWORD *)((QWORD)(&fxsave->XMM0)+16*r);
+                DWORD *sourceparts=(DWORD *)((QWORD)(&ChangeRegBPList[i].changereginfo.newXMM0)+16*r);
+                int p;
+
+                for (p=0; p<4; p++)
+                {
+                  if (mask & (1 << p))
+                    destparts[p]=sourceparts[p];
+                }
+              }
+            }
+
+          }
+
+
 
           RFLAGS flags;
           flags.value=vmread(vm_guest_rflags);
@@ -865,35 +1120,81 @@ void saveStack(pcpuinfo currentcpuinfo, unsigned char *stack) //stack is 4096 by
 
 void fillPageEventBasic(PageEventBasic *peb, VMRegisters *registers)
 {
-  peb->VirtualAddress=vmread(vm_guest_linear_address);
-  peb->PhysicalAddress=vmread(vm_guest_physical_address);
-  peb->CR3=vmread(vm_guest_cr3);
-  peb->FSBASE=vmread(vm_guest_fs_base);
-  peb->GSBASE=vmread(vm_guest_gs_base);
-  peb->FLAGS=vmread(vm_guest_rflags);
-  peb->RAX=registers->rax;
-  peb->RBX=registers->rbx;
-  peb->RCX=registers->rcx;
-  peb->RDX=registers->rdx;
-  peb->RSI=registers->rsi;
-  peb->RDI=registers->rdi;
-  peb->R8=registers->r8;
-  peb->R9=registers->r9;
-  peb->R10=registers->r10;
-  peb->R11=registers->r11;
-  peb->R12=registers->r12;
-  peb->R13=registers->r13;
-  peb->R14=registers->r14;
-  peb->R15=registers->r15;
-  peb->RBP=registers->rbp;
-  peb->RSP=vmread(vm_guest_rsp);
-  peb->RIP=vmread(vm_guest_rip);
-  peb->CS=vmread(vm_guest_cs);
-  peb->DS=vmread(vm_guest_ds);
-  peb->ES=vmread(vm_guest_es);
-  peb->SS=vmread(vm_guest_ss);
-  peb->FS=vmread(vm_guest_fs);
-  peb->GS=vmread(vm_guest_gs);
+#ifdef MEMORYCHECK
+  //make sure it's all 0xce
+  if (checkmem((unsigned char*)peb, sizeof(PageEventBasic)))
+      while (1);
+
+#endif
+
+  if (isAMD)
+  {
+    pcpuinfo c=getcpuinfo();
+
+    peb->VirtualAddress=0;
+    peb->PhysicalAddress=c->vmcb->EXITINFO2;
+    peb->CR3=c->vmcb->CR3;
+    peb->FSBASE=c->vmcb->fs_base;
+    peb->GSBASE=c->vmcb->gs_base;
+    peb->FLAGS=c->vmcb->RFLAGS;
+    peb->RAX=c->vmcb->RAX;
+    peb->RBX=registers->rbx;
+    peb->RCX=registers->rcx;
+    peb->RDX=registers->rdx;
+    peb->RSI=registers->rsi;
+    peb->RDI=registers->rdi;
+    peb->R8=registers->r8;
+    peb->R9=registers->r9;
+    peb->R10=registers->r10;
+    peb->R11=registers->r11;
+    peb->R12=registers->r12;
+    peb->R13=registers->r13;
+    peb->R14=registers->r14;
+    peb->R15=registers->r15;
+    peb->RBP=registers->rbp;
+    peb->RSP=c->vmcb->RSP;
+    peb->RIP=c->vmcb->RIP;
+    peb->CS=c->vmcb->cs_selector;
+    peb->DS=c->vmcb->ds_selector;
+    peb->ES=c->vmcb->es_selector;
+    peb->SS=c->vmcb->ss_selector;
+    peb->FS=c->vmcb->fs_selector;
+    peb->GS=c->vmcb->gs_selector;
+
+  }
+  else
+  {
+
+    peb->VirtualAddress=vmread(vm_guest_linear_address);
+    peb->PhysicalAddress=vmread(vm_guest_physical_address);
+    peb->CR3=vmread(vm_guest_cr3);
+    peb->FSBASE=vmread(vm_guest_fs_base);
+    peb->GSBASE=vmread(vm_guest_gs_base);
+    peb->FLAGS=vmread(vm_guest_rflags);
+    peb->RAX=registers->rax;
+    peb->RBX=registers->rbx;
+    peb->RCX=registers->rcx;
+    peb->RDX=registers->rdx;
+    peb->RSI=registers->rsi;
+    peb->RDI=registers->rdi;
+    peb->R8=registers->r8;
+    peb->R9=registers->r9;
+    peb->R10=registers->r10;
+    peb->R11=registers->r11;
+    peb->R12=registers->r12;
+    peb->R13=registers->r13;
+    peb->R14=registers->r14;
+    peb->R15=registers->r15;
+    peb->RBP=registers->rbp;
+    peb->RSP=vmread(vm_guest_rsp);
+    peb->RIP=vmread(vm_guest_rip);
+    peb->CS=vmread(vm_guest_cs);
+    peb->DS=vmread(vm_guest_ds);
+    peb->ES=vmread(vm_guest_es);
+    peb->SS=vmread(vm_guest_ss);
+    peb->FS=vmread(vm_guest_fs);
+    peb->GS=vmread(vm_guest_gs);
+  }
   peb->Count=0;
 }
 
@@ -933,6 +1234,7 @@ int ept_getWatchID(QWORD address)
 }
 
 BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSAVE64 fxsave, QWORD PhysicalAddress)
+//Used by Intel and AMD
 {
   int ID;
   int logentrysize;
@@ -943,11 +1245,10 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
 
   csEnter(&eptWatchListCS);
 
-  sendstring("EPT event and there is a watchlist entry\n");
+
 
   ID=ept_getWatchID(PhysicalAddress);
 
-  sendstringf("ept_getWatchID returned %d\n", ID);
 
   if (ID==-1)
   {
@@ -955,12 +1256,33 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
     return FALSE;
   }
 
+  QWORD RIP;
+  QWORD RSP;
 
-  QWORD RIP=vmread(vm_guest_rip);
-  QWORD RSP=vmread(vm_guest_rsp);
+  sendstring("EPT/NP event and there is a watchlist entry\n");
+  sendstringf("ept_getWatchID returned %d\n", ID);
+
+
+  if (isAMD)
+  {
+    RIP=currentcpuinfo->vmcb->RIP;
+    RSP=currentcpuinfo->vmcb->RSP;
+  }
+  else
+  {
+    RIP=vmread(vm_guest_rip);
+    RSP=vmread(vm_guest_rsp);
+
+  }
+
   QWORD PhysicalAddressBase=PhysicalAddress & 0xfffffffffffff000ULL;
   EPT_VIOLATION_INFO evi;
-  evi.ExitQualification=vmread(vm_exit_qualification);
+  NP_VIOLATION_INFO nvi;
+
+  if (isAMD)
+    nvi.ErrorCode=currentcpuinfo->vmcb->EXITINFO1;
+  else
+    evi.ExitQualification=vmread(vm_exit_qualification);
 
   //nosendchar[getAPICID()]=0;
   sendstringf("Handling something that resembles watch ID %d\n", ID);
@@ -975,7 +1297,7 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
       if (eptWatchList[ID].Type==EPTW_WRITE)
       {
         //must be a write operation error
-        if ((evi.W) && (evi.WasWritable==0)) //write operation and writable was 0
+        if (((!isAMD) && (evi.W) && (evi.WasWritable==0)) || (isAMD && nvi.W))  //write operation and writable was 0
         {
           ID=i;
 
@@ -986,7 +1308,7 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
       else if (eptWatchList[ID].Type==EPTW_READWRITE)
       {
         //must be a read or write operation
-        if (((evi.W) && (evi.WasWritable==0)) || ((evi.R) && (evi.WasReadable==0)))  //write operation and writable was 0 or read and readable was 0
+        if ((isAMD && nvi.P==0) || ((!isAMD) && (((evi.W) && (evi.WasWritable==0)) || ((evi.R) && (evi.WasReadable==0)))) ) //write operation and writable was 0 or read and readable was 0
         {
           ID=i;
           if (ept_isWatchIDPerfectMatch(PhysicalAddress, i))
@@ -995,7 +1317,7 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
       }
       else
       {
-          if ((evi.X) && (evi.WasExecutable==0)) //execute operation and executable was 0
+          if ((isAMD && nvi.ID) || ((!isAMD) && (evi.X) && (evi.WasExecutable==0))) //execute operation and executable was 0
           {
             ID=i;
 
@@ -1012,16 +1334,41 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
 
   //ID is now set to the most logical watch(usually there is no conflicts, and even if there is, no biggie. But still)
 
-  if ((currentcpuinfo->eptWatchList[ID]->XA) && (currentcpuinfo->eptWatchList[ID]->RA) && (currentcpuinfo->eptWatchList[ID]->WA))
+  PPTE_PAE npte;
+  PEPT_PTE epte;
+
+  if (isAMD)
   {
-    sendstringf("This entry was already marked with full access (check caches)\n");
+    npte=(PPTE_PAE)currentcpuinfo->eptWatchList[ID];
+    if ((npte->EXB==0) && (npte->P) && (npte->RW))
+    {
+      sendstringf("This entry was already marked with full access (check caches) (AMD)\n");
+    }
+  }
+  else
+  {
+    epte=currentcpuinfo->eptWatchList[ID];
+    if ((epte->XA) && (epte->RA) && (epte->WA))
+    {
+      sendstringf("This entry was already marked with full access (check caches)\n");
+    }
   }
 
   //run once
-  currentcpuinfo->eptWatchList[ID]->XA=1;
-  currentcpuinfo->eptWatchList[ID]->RA=1;
-  currentcpuinfo->eptWatchList[ID]->WA=1;
+  sendstringf("%d Making page fully accessible", currentcpuinfo->cpunr);
 
+  if (isAMD)
+  {
+    npte->EXB=0;  //execute allow
+    npte->P=1;    //read allow
+    npte->RW=1;   //write allow
+  }
+  else
+  {
+    currentcpuinfo->eptWatchList[ID]->XA=1; //execute allow
+    currentcpuinfo->eptWatchList[ID]->RA=1; //read allow
+    currentcpuinfo->eptWatchList[ID]->WA=1; //write allow
+  }
   sendstringf("Page is accessible. Doing single step\n");
 
   vmx_enableSingleStepMode();
@@ -1049,6 +1396,7 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
 
   if (eptWatchList[ID].CopyInProgress) //a copy operation is in progress
   {
+    eptWatchList[ID].Log->missedEntries++;
     sendstringf("This watchlist is currently being copied, not logging this\n");
     csLeave(&eptWatchListCS);
     return TRUE;
@@ -1060,7 +1408,7 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
       (PhysicalAddress>=eptWatchList[ID].PhysicalAddress+eptWatchList[ID].Size)
       ))
   {
-    sendstringf("Not logging all and the physical address is not in the exact range\n");
+    sendstringf("%d: Not logging all and the physical address(%6) is not in the exact range (%p-%p)\n", currentcpuinfo->cpunr, PhysicalAddress, eptWatchList[ID].PhysicalAddress, eptWatchList[ID].PhysicalAddress+eptWatchList[ID].Size);
     csLeave(&eptWatchListCS);
     return TRUE; //no need to log it
   }
@@ -1099,6 +1447,9 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
         sendstringf(" but EPTO_MULTIPLERIP is 1, so checking register states\n");
 
       //still here, so multiple RIP's are ok. check if it matches the other registers
+      if (isAMD)
+        registers->rax=currentcpuinfo->vmcb->RAX;
+
       if (
           (peb->RSP==RSP) &&
           (peb->RBP==registers->rbp) &&
@@ -1143,6 +1494,10 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
     }
 
     //reallocate the buffer
+#ifdef MEMORYCHECK
+    while (1); //I don't have this when doing the test
+#endif
+
     int newmax=eptWatchList[ID].Log->numberOfEntries*2;
     PPageEventListDescriptor temp=realloc(eptWatchList[ID].Log, sizeof(PageEventListDescriptor)+logentrysize*newmax);
     if (temp!=NULL)
@@ -1173,12 +1528,24 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
   {
     case PE_BASIC:
     {
+#ifdef MEMORYCHECK
+  //make sure it's all 0xce
+      if (checkmem((unsigned char*)&eptWatchList[ID].Log->pe.basic[i], sizeof(PageEventBasic)))
+        while (1);
+
+#endif
+
       fillPageEventBasic(&eptWatchList[ID].Log->pe.basic[i], registers);
       break;
     }
 
     case PE_EXTENDED:
     {
+#ifdef MEMORYCHECK
+  //make sure it's all 0xce
+      if (checkmem((unsigned char*)&eptWatchList[ID].Log->pe.extended[i], sizeof(PageEventExtended)))
+        while (1);
+#endif
       fillPageEventBasic(&eptWatchList[ID].Log->pe.extended[i].basic, registers);
       eptWatchList[ID].Log->pe.extended[i].fpudata=*fxsave;
       break;
@@ -1186,6 +1553,11 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
 
     case PE_BASICSTACK:
     {
+#ifdef MEMORYCHECK
+  //make sure it's all 0xce
+      if (checkmem((unsigned char*)&eptWatchList[ID].Log->pe.basics[i], sizeof(PageEventBasicWithStack)))
+        while (1);
+#endif
       fillPageEventBasic(&eptWatchList[ID].Log->pe.basics[i].basic, registers);
       saveStack(currentcpuinfo, eptWatchList[ID].Log->pe.basics[i].stack);
       break;
@@ -1193,6 +1565,11 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
 
     case PE_EXTENDEDSTACK:
     {
+#ifdef MEMORYCHECK
+  //make sure it's all 0xce
+      if (checkmem((unsigned char*)&eptWatchList[ID].Log->pe.extendeds[i], sizeof(PageEventExtendedWithStack)))
+        while (1);
+#endif
       fillPageEventBasic(&eptWatchList[ID].Log->pe.extendeds[i].basic, registers);
       eptWatchList[ID].Log->pe.extendeds[i].fpudata=*fxsave;
       saveStack(currentcpuinfo, eptWatchList[ID].Log->pe.extendeds[i].stack);
@@ -1213,34 +1590,87 @@ BOOL ept_handleWatchEvent(pcpuinfo currentcpuinfo, VMRegisters *registers, PFXSA
 
 int ept_handleWatchEventAfterStep(pcpuinfo currentcpuinfo,  int ID)
 {
-  sendstringf("ept_handleWatchEventAfterStep %d\n", ID);
+  sendstringf("%d ept_handleWatchEventAfterStep %d  Type=%d\n", currentcpuinfo->cpunr, ID, eptWatchList[ID].Type);
+
+  if (isAMD)
+    sendstringf("%d CS:RIP=%x:%6\n", currentcpuinfo->cpunr, currentcpuinfo->vmcb->cs_selector, currentcpuinfo->vmcb->RIP);
+
+  if (ID>eptWatchListPos)
+  {
+    sendstring("Invalid ID\n");
+    return 0;
+  }
+
+
+  if (eptWatchList[ID].Active==0)
+  {
+    sendstring("Inactive ID\n");
+    return 0;
+  }
+
+
+
 
   switch (eptWatchList[ID].Type)
   {
   	  case EPTW_WRITE:
   	  {
   	    sendstringf("Write type. So making it unwritable\n");
-  	    currentcpuinfo->eptWatchList[ID]->WA=0;
+
+  	    if (isAMD)
+  	    {
+  	      PPTE_PAE pte;
+  	      pte=(PPTE_PAE)currentcpuinfo->eptWatchList[ID];
+  	      if (pte)
+  	      {
+            UINT64 oldvalue=*(UINT64 *)pte;
+            pte->RW=0;
+
+            UINT64 newvalue=*(UINT64 *)pte;
+
+            sendstringf("%6 -> %6\n", oldvalue, newvalue);
+  	      }
+
+  	    }
+  	    else
+  	      currentcpuinfo->eptWatchList[ID]->WA=0;
   		  break;
   	  }
 
   	  case EPTW_READWRITE:
   	  {
   	    sendstringf("read type. So making it unreadable\n");
-  	    currentcpuinfo->eptWatchList[ID]->RA=0;
-  	    currentcpuinfo->eptWatchList[ID]->WA=0;
-  	    if (has_EPT_ExecuteOnlySupport)
-  	      currentcpuinfo->eptWatchList[ID]->XA=1;
+  	    if (isAMD)
+  	    {
+  	      PPTE_PAE pte;
+  	      pte=(PPTE_PAE)currentcpuinfo->eptWatchList[ID];
+  	      pte->P=0;
+  	    }
   	    else
-  	      currentcpuinfo->eptWatchList[ID]->XA=0;
+  	    {
+          currentcpuinfo->eptWatchList[ID]->RA=0;
+          currentcpuinfo->eptWatchList[ID]->WA=0;
+          if (has_EPT_ExecuteOnlySupport)
+            currentcpuinfo->eptWatchList[ID]->XA=1;
+          else
+            currentcpuinfo->eptWatchList[ID]->XA=0;
+  	    }
 
   		  break;
   	  }
 
   	  case EPTW_EXECUTE:
   	  {
-  		  sendstringf("execute type. So making it non-executable\n");
-  		  currentcpuinfo->eptWatchList[ID]->XA=0;
+  	    sendstringf("execute type. So making it non-executable\n");
+        if (isAMD)
+        {
+          PPTE_PAE pte;
+          pte=(PPTE_PAE)currentcpuinfo->eptWatchList[ID];
+          pte->EXB=1;
+        }
+        else
+          currentcpuinfo->eptWatchList[ID]->XA=0;
+
   		  break;
   	  }
   }
@@ -1249,21 +1679,33 @@ int ept_handleWatchEventAfterStep(pcpuinfo currentcpuinfo,  int ID)
   //      Keep in mind that CE reading memory may also trigger access interrupts so those need to be
   //      ignored by the driver
 
+
   if (currentcpuinfo->BPAfterStep)
   {
-    if (int1redirection_idtbypass)
+    if (isAMD)
     {
-      regDR7 dr7;
-      //disable GD bit before int1
-      dr7.DR7=vmread(vm_guest_dr7);
-      dr7.GD=0;
-      vmwrite(vm_guest_dr7,dr7.DR7);
-
-      emulateExceptionInterrupt(currentcpuinfo, NULL, int1redirection_idtbypass_cs, int1redirection_idtbypass_rip, 0, 0, 0);
+      sendstringf("AMD: BP after STEP\n");
+      currentcpuinfo->vmcb->inject_Type=3; //exception
+      currentcpuinfo->vmcb->inject_Vector=int1redirection;
+      currentcpuinfo->vmcb->inject_Valid=1;
+      currentcpuinfo->vmcb->inject_EV=0;
     }
     else
     {
-      vmwrite(vm_pending_debug_exceptions,0x4000); //for OS'es without the need for int1 redirects
+      if (int1redirection_idtbypass)
+      {
+        regDR7 dr7;
+        //disable GD bit before int1
+        dr7.DR7=vmread(vm_guest_dr7);
+        dr7.GD=0;
+        vmwrite(vm_guest_dr7,dr7.DR7);
+
+        emulateExceptionInterrupt(currentcpuinfo, NULL, int1redirection_idtbypass_cs, int1redirection_idtbypass_rip, 0, 0, 0);
+      }
+      else
+      {
+        vmwrite(vm_pending_debug_exceptions,0x4000); //for OS'es without the need for int1 redirects
+      }
     }
 
     currentcpuinfo->BPAfterStep=0;
@@ -1271,21 +1713,36 @@ int ept_handleWatchEventAfterStep(pcpuinfo currentcpuinfo,  int ID)
 
   }
 
+  sendstring("Calling ept_invalidate\n");
+
   ept_invalidate();
   return 0;
 }
 
 VMSTATUS ept_watch_retrievelog(int ID, QWORD results, DWORD *resultSize, DWORD *offset, QWORD *errorcode)
+/*
+ * Retrieves the collected log
+ * offset is the offset from what point the log should continue copying (works like a rep xxx instruction)
+ */
 {
 
   //sendstringf("ept_watch_retrievelog(ID=%d)\n", ID);
 
-
-
   if (ID>=eptWatchListPos) //out of range
   {
     sendstringf("Invalid ID\n");
-    vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+
+
+    if (isAMD)
+    {
+      if (AMD_hasNRIPS)
+        getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+      else
+        getcpuinfo()->vmcb->RIP+=3;
+    }
+    else
+      vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+
     *errorcode=1; //invalid ID
     return VM_OK;
   }
@@ -1295,7 +1752,15 @@ VMSTATUS ept_watch_retrievelog(int ID, QWORD results, DWORD *resultSize, DWORD *
   if (eptWatchList[ID].Active==0) //not active
   {
     sendstringf("Inactive ID\n");
-    vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+    if (isAMD)
+    {
+      if (AMD_hasNRIPS)
+        getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+      else
+        getcpuinfo()->vmcb->RIP+=3;
+    }
+    else
+      vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
     *errorcode=3; //inactive ID
 
     csLeave(&eptWatchListCS);
@@ -1341,7 +1806,15 @@ VMSTATUS ept_watch_retrievelog(int ID, QWORD results, DWORD *resultSize, DWORD *
   {
     sendstringf("Too small\n");
     *resultSize=sizeneeded;
-    vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+    if (isAMD)
+    {
+      if (AMD_hasNRIPS)
+        getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+      else
+        getcpuinfo()->vmcb->RIP+=3;
+    }
+    else
+      vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
     *errorcode=2; //invalid size
     csLeave(&eptWatchListCS);
     return VM_OK;
@@ -1352,11 +1825,77 @@ VMSTATUS ept_watch_retrievelog(int ID, QWORD results, DWORD *resultSize, DWORD *
   if (results==0)
   {
     sendstringf("results==0\n");
-    vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+    if (isAMD)
+    {
+      if (AMD_hasNRIPS)
+        getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+      else
+        getcpuinfo()->vmcb->RIP+=3;
+    }
+    else
+      vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
     *errorcode=4; //results==0
     csLeave(&eptWatchListCS);
     return VM_OK;
   }
+
+#ifdef MEMORYCHECKNOLOGRETRIEVAL
+  //skip
+  if (isAMD)
+  {
+    if (AMD_hasNRIPS)
+      getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+    else
+      getcpuinfo()->vmcb->RIP+=3;
+  }
+  else
+    vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+  *resultSize=0;
+  *errorcode=0; //results==0
+  csLeave(&eptWatchListCS);
+  return VM_OK;
+#endif
+
+  if ((*offset) && (eptWatchList[ID].CopyInProgress==0))
+  {
+#ifdef MEMORYCHECK
+    while (1);
+
+#endif
+    if (isAMD)
+    {
+      if (AMD_hasNRIPS)
+        getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+      else
+        getcpuinfo()->vmcb->RIP+=3;
+    }
+    else
+      vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+    *errorcode=5; //offset set but not copyinprogress
+    csLeave(&eptWatchListCS);
+    return VM_OK;
+  }
+
+  if ((*offset)>sizeneeded)
+  {
+#ifdef MEMORYCHECK
+    while (1);
+#endif
+    if (isAMD)
+    {
+      if (AMD_hasNRIPS)
+        getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+      else
+        getcpuinfo()->vmcb->RIP+=3;
+    }
+    else
+      vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+    *errorcode=6; //offset is too high
+    csLeave(&eptWatchListCS);
+    return VM_OK;
+  }
+
+
 
   int sizeleft=sizeneeded-(*offset); //decrease bytes left by bytes already copied
 
@@ -1389,20 +1928,43 @@ VMSTATUS ept_watch_retrievelog(int ID, QWORD results, DWORD *resultSize, DWORD *
     else
     {
       sendstringf("Not a pagefault\n");
-      vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+      if (isAMD)
+      {
+        if (AMD_hasNRIPS)
+          getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+        else
+          getcpuinfo()->vmcb->RIP+=3;
+      }
+      else
+        vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
       *errorcode=0x1000+error; //map error
       csLeave(&eptWatchListCS);
       return VM_OK;
     }
   }
 
-  *errorcode=0;
+
 
   if (blocksize)
   {
     //sendstringf("Copying to destination\n");
     copymem(destination, source, blocksize);
     unmapVMmemory(destination, blocksize);
+#ifdef MEMORYCHECK
+    //mark log as 0xce
+    QWORD a,b;
+
+    b=(QWORD)eptWatchList[ID].Log+sizeof(PageEventListDescriptor);
+    int x;
+    for (x=0; x<blocksize; x++)
+    {
+      a=(QWORD)source+x;
+      if (a>=b)
+        source[x]=0xce;
+    }
+#endif
+
+
 
     *offset=(*offset)+blocksize;
   }
@@ -1427,7 +1989,16 @@ VMSTATUS ept_watch_retrievelog(int ID, QWORD results, DWORD *resultSize, DWORD *
     *resultSize=*offset;
 
    // sendstringf("Going to the next instruction\n");
-    vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+    if (isAMD)
+    {
+      if (AMD_hasNRIPS)
+        getcpuinfo()->vmcb->RIP=getcpuinfo()->vmcb->nRIP;
+      else
+        getcpuinfo()->vmcb->RIP+=3;
+    }
+    else
+      vmwrite(vm_guest_rip,vmread(vm_guest_rip)+vmread(vm_exit_instructionlength));
+    *errorcode=0;
   }
   else
   {
@@ -1459,31 +2030,44 @@ int ept_watch_activate(QWORD PhysicalAddress, int Size, int Type, DWORD Options,
   int structtype=(Options >> 2) & 3;
   int structsize;
 
+
+
   sendstringf("getFreeWatchID() returned %d .  eptWatchListPos=%d\n", ID, eptWatchListPos);
   switch (structtype)
   {
-    case 0: structsize=sizeof(PageEventBasic); break;
-    case 1: structsize=sizeof(PageEventExtended); break;
-    case 2: structsize=sizeof(PageEventBasicWithStack); break;
-    case 3: structsize=sizeof(PageEventExtendedWithStack); break;
+    case 0: structsize=sizeof(PageEventBasic); break;             //EPTO_SAVE_XSAVE=0 and EPTO_SAVE_STACK=0
+    case 1: structsize=sizeof(PageEventExtended); break;          //EPTO_SAVE_XSAVE=1 and EPTO_SAVE_STACK=0
+    case 2: structsize=sizeof(PageEventBasicWithStack); break;    //EPTO_SAVE_XSAVE=0 and EPTO_SAVE_STACK=1
+    case 3: structsize=sizeof(PageEventExtendedWithStack); break; //EPTO_SAVE_XSAVE=1 and EPTO_SAVE_STACK=1
   }
 
   //make sure it doesn't pass a page boundary
   //todo: recursively spawn more watches if needed
 
   if (((PhysicalAddress+Size) & 0xfffffffffffff000ULL) > (PhysicalAddress & 0xfffffffffffff000ULL))
-       eptWatchList[ID].Size=0x1000-(PhysicalAddress & 0xfff);
+    eptWatchList[ID].Size=0x1000-(PhysicalAddress & 0xfff);
+  else
+    eptWatchList[ID].Size=Size;
 
   eptWatchList[ID].PhysicalAddress=PhysicalAddress;
-  eptWatchList[ID].Size=Size;
   eptWatchList[ID].Type=Type;
-  eptWatchList[ID].Log=malloc(sizeof(PageEventListDescriptor)+structsize*MaxEntryCount);
-  zeromemory(eptWatchList[ID].Log, sizeof(PageEventListDescriptor)+structsize*MaxEntryCount);
+  eptWatchList[ID].Log=malloc(sizeof(PageEventListDescriptor)*2+structsize*MaxEntryCount); //*2 because i'm not sure how the alignment of the final entry goes
+  zeromemory(eptWatchList[ID].Log, sizeof(PageEventListDescriptor)*2+structsize*MaxEntryCount);
+
+#ifdef MEMORYCHECK
+  memset(eptWatchList[ID].Log, 0xce, sizeof(PageEventListDescriptor)*2+structsize*MaxEntryCount);
+
+
+  if (checkmem((unsigned char*)&eptWatchList[ID].Log->pe.basic[0], structsize*MaxEntryCount))
+    while (1);
+
+#endif
 
   eptWatchList[ID].Log->ID=ID;
   eptWatchList[ID].Log->entryType=structtype;
   eptWatchList[ID].Log->numberOfEntries=0;
   eptWatchList[ID].Log->maxNumberOfEntries=MaxEntryCount;
+  eptWatchList[ID].Log->missedEntries=0;
 
   eptWatchList[ID].Options=Options;
   sendstringf("Configured ept watch. Activating ID %d\n", ID);
@@ -1494,36 +2078,76 @@ int ept_watch_activate(QWORD PhysicalAddress, int Size, int Type, DWORD Options,
   pcpuinfo c=firstcpuinfo;
   while (c)
   {
+    QWORD PA_PTE;
+
     sendstringf("Setting watch for CPU %d\n", c->cpunr);
     csEnter(&c->EPTPML4CS);
 
-    QWORD PA_EPTE=EPTMapPhysicalMemory(c, PhysicalAddress, 1);
+    if (isAMD)
+    {
+      PA_PTE=NPMapPhysicalMemory(c, PhysicalAddress, 1);
+      sendstringf("PA_PTE=%6\n", PA_PTE);
+    }
+    else
+      PA_PTE=EPTMapPhysicalMemory(c, PhysicalAddress, 1);
+
 
     if (c->eptWatchListLength<eptWatchListSize) //realloc
       c->eptWatchList=realloc(c->eptWatchList, eptWatchListSize*sizeof(EPT_PTE));
 
-    c->eptWatchList[ID]=mapPhysicalMemoryGlobal(PA_EPTE, sizeof(EPT_PTE)); //can use global as it's not a quick map/unmap procedure
+    c->eptWatchList[ID]=mapPhysicalMemoryGlobal(PA_PTE, sizeof(EPT_PTE)); //can use global as it's not a quick map/unmap procedure
 
-    EPT_PTE temp=*c->eptWatchList[ID]; //using temp in case the cpu doesn't support a XA of 1 with an RA of 0
-
-    if (Type==EPTW_WRITE) //Writes
-      temp.WA=0;
-    else
-    if (Type==EPTW_READWRITE) //read and writes
+    if (isAMD)
     {
-      if (has_EPT_ExecuteOnlySupport)
-        temp.XA=1;
+      //AMD NP
+      _PTE_PAE temp=*(_PTE_PAE *)c->eptWatchList[ID];
+      sendstringf("Old page value was %6\n", *(QWORD *)c->eptWatchList[ID]);
+
+      if (Type==EPTW_WRITE)
+      {
+        temp.RW=0;
+      }
       else
+      if (Type==EPTW_READWRITE)
+      {
+        temp.P=0; //not present, ANY access, including execute
+      }
+      else
+      if (Type==EPTW_EXECUTE)
+      {
+        temp.EXB=1; //no execute flag
+      }
+      *(c->eptWatchList[ID])=*(EPT_PTE *)&temp;
+      sendstringf("New page value is %6\n", *(QWORD *)c->eptWatchList[ID]);
+    }
+    else
+    {
+
+      //Intel EPT
+      EPT_PTE temp=*c->eptWatchList[ID]; //using temp in case the cpu doesn't support a XA of 1 with an RA of 0
+
+      if (Type==EPTW_WRITE) //Writes
+        temp.WA=0;
+      else
+      if (Type==EPTW_READWRITE) //read and writes
+      {
+        if (has_EPT_ExecuteOnlySupport)
+          temp.XA=1;
+        else
+          temp.XA=0;
+        temp.WA=0;
+        temp.RA=0;
+      }
+
+      if (Type==EPTW_EXECUTE) //executes
+      {
         temp.XA=0;
-      temp.WA=0;
-      temp.RA=0;
+      }
+      *(c->eptWatchList[ID])=temp;
+
     }
 
-    if (Type==EPTW_EXECUTE) //executes
-    {
-    	temp.XA=0;
-    }
-    *(c->eptWatchList[ID])=temp;
+
 
     _wbinvd();
     c->eptUpdated=1;
@@ -1547,6 +2171,7 @@ int ept_watch_activate(QWORD PhysicalAddress, int Size, int Type, DWORD Options,
 
   csLeave(&eptWatchListCS);
 
+  sendstringf("Invalidating pages\n");
   ept_invalidate();
 
   return result;
@@ -1603,32 +2228,56 @@ int ept_watch_deactivate(int ID)
 
       csEnter(&c->EPTPML4CS);
 
-      EPT_PTE temp=*(c->eptWatchList[ID]);
-      if (eptWatchList[ID].Type==EPTW_WRITE)
+      if (isAMD)
       {
-        sendstringf("  This was a write entry. Making it writable\n");
-        temp.WA=1;
-      }
-      else if (eptWatchList[ID].Type==EPTW_READWRITE)
-      {
-        sendstringf("  This was an access entry. Making it readable and writable");
-        temp.RA=1;
-        temp.WA=1;
-        if (has_EPT_ExecuteOnlySupport==0)
+        _PTE_PAE temp=*(PPTE_PAE)(c->eptWatchList[ID]);
+        if (eptWatchList[ID].Type==EPTW_WRITE)
         {
-          sendstringf(" and executable as this cpu does not support execute only pages\n");
-          temp.XA=1;
+          temp.RW=1; //back to writable
         }
+        else if (eptWatchList[ID].Type==EPTW_READWRITE)
+        {
+          temp.P=1;
+          temp.RW=1;
+          temp.EXB=0;
+        }
+        else
+        {
+          temp.EXB=0;
+        }
+
+        *(PPTE_PAE)(c->eptWatchList[ID])=temp;
       }
       else
       {
-          sendstringf("  This was an execute entry. Making it executable");
-          temp.XA=1;
+
+        EPT_PTE temp=*(c->eptWatchList[ID]);
+        if (eptWatchList[ID].Type==EPTW_WRITE)
+        {
+          sendstringf("  This was a write entry. Making it writable\n");
+          temp.WA=1;
+        }
+        else if (eptWatchList[ID].Type==EPTW_READWRITE)
+        {
+          sendstringf("  This was an access entry. Making it readable and writable");
+          temp.RA=1;
+          temp.WA=1;
+          if (has_EPT_ExecuteOnlySupport==0)
+          {
+            sendstringf(" and executable as this cpu does not support execute only pages\n");
+            temp.XA=1;
+          }
+        }
+        else
+        {
+            sendstringf("  This was an execute entry. Making it executable");
+            temp.XA=1;
+        }
+
+
+
+        *(c->eptWatchList[ID])=temp;
       }
-
-
-
-      *(c->eptWatchList[ID])=temp;
       _wbinvd();
       c->eptUpdated=1;
 
@@ -1698,11 +2347,13 @@ void getMTRRMapInfo(QWORD startaddress, QWORD size, int *fullmap, int *memtype)
   //note: the list is sorted
   QWORD starta=startaddress;
   QWORD stopa=startaddress+size-1;
-  int morethan1=0;
   int i;
 
-  *memtype=MTRRDefType.TYPE;
+  *memtype=MTRRDefType.TYPE; //if not found, this is the result (usually uncached)
   *fullmap=1;
+
+  sendstringf("getMTRRMapInfo(%6, %x)\n", startaddress, size);
+
 
   //csEnter(&memoryrangesCS); //currently addToMemoryRanges is only called BEFORE ept exceptions happen. So this cs is not neede
   for (i=0; i<memoryrangesPos; i++)
@@ -1715,39 +2366,26 @@ void getMTRRMapInfo(QWORD startaddress, QWORD size, int *fullmap, int *memtype)
     {
       //overlap, check the details
       if ((starta>=startb) && (stopa<=stopb)) //falls completely within the region, so can be fully mapped.
-      {
-        if (morethan1==0)
-          *memtype=memoryranges[i].memtype;//set the memory type
-        else
-          *memtype=MTC_RPS(memoryranges[i].memtype, *memtype); //set the memory type based on the two combined types
-
-        morethan1++;
-      }
+        *memtype=memoryranges[i].memtype;//set the memory type
       else
-      {
-        *fullmap=0; //mark as not fully mappable, go one level lower(this also happens on overlaps where a second part doesn't fit, shouldn't happen often)
+        *fullmap=0; //mark as not fully mappable, go one level lower
 
-        break;
-      }
-
-
+      return;
     }
 
     if (stopa<startb) //reached a startaddress higher than my stopaddress, which means every other item will be as well
-      break;
+      return;
   }
   //csLeave(&memoryrangesCS);
 }
+
+
 
 void addToMemoryRanges(QWORD address, QWORD size, int type)
 /*
  * pre: memoryrangesCS lock has been aquired
  */
 {
-  int i;
-  int insertpos=-1;
-
-
   if (size==0) return;
 
   //add memory for a new entry
@@ -1757,32 +2395,176 @@ void addToMemoryRanges(QWORD address, QWORD size, int type)
     memoryrangesLength=memoryrangesLength*2;
   }
 
+  memoryranges[memoryrangesPos].startaddress=address;
+  memoryranges[memoryrangesPos].size=size;
+  memoryranges[memoryrangesPos].memtype=type;
+
+  memoryrangesPos++;
+}
+
+void sanitizeMemoryRegions()
+{
+  //find overlapping regions and calculate the best memtype
+  //----------------------------------------------------------
+  //|
+  //|
+  int i=0,j;
+
+
+
   for (i=0; i<memoryrangesPos; i++)
   {
-    if (memoryranges[i].startaddress>address)
+    QWORD starta=memoryranges[i].startaddress;
+    QWORD stopa=memoryranges[i].startaddress+memoryranges[i].size-1;
+
+    if (memoryranges[i].size==0)
+      continue;
+
+    if (i>100)
     {
-      //insert here
-      insertpos=i;
-      break;
+      sendstringf("Breaking here");
+      while(1);
+    }
+
+    sendstringf("Checking %d (%6 - %6):%d for overlap\n", i, starta, stopa, memoryranges[i].memtype);
+
+    j=i+1;
+    while (j<memoryrangesPos)
+    {
+      if (j==i) continue;
+      if (memoryranges[j].size==0)
+        continue;
+
+      if (j>100)
+      {
+        sendstringf("Breaking here");
+        while(1);
+      }
+
+
+      QWORD startb=memoryranges[j].startaddress;
+      QWORD stopb=memoryranges[j].startaddress+memoryranges[j].size-1;
+
+      if ((starta <= stopb) && (startb <= stopa))
+      {
+        //3 parts: left, overlap, right.  Left and right can be 0 width
+        MEMRANGE left;
+        MEMRANGE overlap;
+        MEMRANGE right;
+        left.size=0;
+        left.memtype=0;
+        left.startaddress=0;
+
+        right.size=0;
+        right.memtype=0;
+        right.startaddress=0;
+
+        //overlaps
+        QWORD newstart;
+        QWORD newstop;
+
+        sendstringf("  Overlaps with %d (%6 - %6):%d\n", j, startb, stopb, memoryranges[j].memtype);
+
+        //left:
+        newstart=minq(starta,startb);
+        newstop=maxq(starta,startb);
+
+        left.startaddress=newstart;
+        left.size=newstop-newstart;
+        left.memtype=starta<startb?memoryranges[i].memtype:memoryranges[j].memtype;
+
+        //right:
+        newstart=minq(stopa,stopb)+1;
+        newstop=maxq(stopa,stopb)+1;
+
+        sendstringf("    debug: right: newstart=%6 newstop=%6\n", newstart, newstop);
+
+        right.startaddress=newstart;
+        right.size=newstop-newstart;
+        right.memtype=stopb<stopa?memoryranges[i].memtype:memoryranges[j].memtype;
+
+        overlap.startaddress=left.startaddress+left.size;
+        overlap.size=right.startaddress-overlap.startaddress;
+        overlap.memtype=MTC_RPS(memoryranges[i].memtype, memoryranges[j].memtype);
+
+
+        if (left.size)
+        {
+          addToMemoryRanges(left.startaddress, left.size, left.memtype);
+          sendstringf("    Left becomes (%6 - %6):%d\n", left.startaddress, left.startaddress+left.size-1, left.memtype);
+        }
+        else
+          sendstringf("    Left is empty\n");
+
+
+        if (right.size)
+        {
+          addToMemoryRanges(right.startaddress, right.size, right.memtype);
+          sendstringf("    Right becomes (%6 - %6):%d\n", right.startaddress, right.startaddress+right.size-1, right.memtype);
+        }
+        else
+          sendstringf("    Right is empty\n");
+
+        //adjust the current entry
+        memoryranges[i].startaddress=overlap.startaddress;
+        memoryranges[i].size=overlap.size;
+        memoryranges[i].memtype=overlap.memtype;
+        sendstringf("    This becomes (%6 - %6):%d\n", memoryranges[i].startaddress, memoryranges[i].startaddress+memoryranges[i].size-1, memoryranges[i].memtype);
+
+
+        //mark as handled
+        int k;
+        for (k=j; k<memoryrangesPos-1; k++)
+          memoryranges[k]=memoryranges[k+1];
+
+        memoryrangesPos--;
+
+        continue;
+      }
+      j++;
     }
   }
 
-  if (insertpos==-1)
-    insertpos=memoryrangesPos;
+  //now that the list has been sanitized delete entries with the same type as the default (not before)
+  i=0;
+  while (i<memoryrangesPos)
+  {
+    if (memoryranges[i].memtype==MTRRDefType.TYPE)
+    {
+      for (j=i; j<memoryrangesPos-1; j++)
+        memoryranges[j]=memoryranges[j+1];
 
-  for (i=memoryrangesPos; i>insertpos; i--)
-    memoryranges[i]=memoryranges[i-1];
+      memoryrangesPos--;
+      continue;
+    }
+    i++;
+  }
 
-  memoryranges[insertpos].startaddress=address;
-  memoryranges[insertpos].size=size;
-  memoryranges[insertpos].memtype=type;
-  memoryrangesPos++;
+
+  //sort the list
+  for (i=0; i<memoryrangesPos; i++)
+  {
+    for (j=i; j<memoryrangesPos; j++)
+    {
+      if (memoryranges[j].startaddress<memoryranges[i].startaddress)
+      {
+        //swap
+        MEMRANGE temp=memoryranges[i];
+        memoryranges[i]=memoryranges[j];
+        memoryranges[j]=temp;
+      }
+    }
+  }
 }
+
 
 void initMemTypeRanges()
 //builds an array of memory ranges and their cache
 {
   int i;
+  if (memoryrangesPos)
+    return; //already initialized
+
   csEnter(&memoryrangesCS);
 
   memoryrangesPos=0;
@@ -1793,14 +2575,18 @@ void initMemTypeRanges()
     memoryranges=malloc2(sizeof(MEMRANGE)*memoryrangesLength);
   }
 
+  sendstringf("Memory ranges:\n");
+
+
   QWORD startaddress=0;
   QWORD size=0;
-  int memtype=MTRRDefType.TYPE;
+  int memtype=-1;
 
   if ((MTRRCapabilities.FIX && MTRRDefType.FE))
   {
+    sendstringf("Using Fixed MTRRs\n");
 
-    QWORD FIX64K_00000=readMSR(IA32_MTRR_FIX64K_00000);
+    QWORD FIX64K_00000=readMSR(IA32_MTRR_FIX64K_00000);  //0606060606060606
     QWORD FIX16K_80000=readMSR(IA32_MTRR_FIX16K_80000);
     QWORD FIX16K_A0000=readMSR(IA32_MTRR_FIX16K_A0000);
     QWORD FIX4K_C0000 =readMSR(IA32_MTRR_FIX4K_C0000);
@@ -1815,6 +2601,7 @@ void initMemTypeRanges()
 
     while (startaddress+size<0x100000)
     {
+      QWORD types;
       int type;
       int sizeinc=0;
 
@@ -1822,7 +2609,7 @@ void initMemTypeRanges()
       {
         case 0 ... 0x7ffff:
         {
-          QWORD types=FIX64K_00000;
+          types=FIX64K_00000;
           int index=(startaddress+size) >> 16;
           type=(types >> (index*8)) & 0xf;
           sizeinc=64*1024;
@@ -1831,7 +2618,7 @@ void initMemTypeRanges()
 
         case 0x80000 ... 0x9ffff:
         {
-          QWORD types=FIX16K_80000;
+          types=FIX16K_80000;
           int index=((startaddress+size)-0x80000) >> 14;
           type=(types >> (index*8)) & 0xf;
           sizeinc=16*1024;
@@ -1840,7 +2627,7 @@ void initMemTypeRanges()
 
         case 0xa0000 ... 0xbffff:
         {
-          QWORD types=FIX16K_A0000;
+          types=FIX16K_A0000;
           int index=((startaddress+size)-0xa0000) >> 14;
           type=(types >> (index*8)) & 0xf;
           sizeinc=16*1024;
@@ -1849,7 +2636,7 @@ void initMemTypeRanges()
 
         case 0xc0000 ... 0xc7fff:
         {
-          QWORD types=FIX4K_C0000;
+          types=FIX4K_C0000;
           int index=((startaddress+size)-0xc0000) >> 12;
           type=(types >> (index*8)) & 0xf;
           sizeinc=4*1024;
@@ -1858,7 +2645,7 @@ void initMemTypeRanges()
 
         case 0xc8000 ... 0xcffff:
         {
-          QWORD types=FIX4K_C8000;
+          types=FIX4K_C8000;
           int index=((startaddress+size)-0xc8000) >> 12;
           type=(types >> (index*8)) & 0xf;
           sizeinc=4*1024;
@@ -1867,7 +2654,7 @@ void initMemTypeRanges()
 
         case 0xd0000 ... 0xd7fff:
         {
-          QWORD types=FIX4K_D0000;
+          types=FIX4K_D0000;
           int index=((startaddress+size)-0xd0000) >> 12;
           type=(types >> (index*8)) & 0xf;
           sizeinc=4*1024;
@@ -1876,7 +2663,7 @@ void initMemTypeRanges()
 
         case 0xd8000 ... 0xdffff:
         {
-          QWORD types=FIX4K_D8000;
+          types=FIX4K_D8000;
           int index=((startaddress+size)-0xd8000) >> 12;
           type=(types >> (index*8)) & 0xf;
           sizeinc=4*1024;
@@ -1885,7 +2672,7 @@ void initMemTypeRanges()
 
         case 0xe0000 ... 0xe7fff:
         {
-          QWORD types=FIX4K_E0000;
+          types=FIX4K_E0000;
           int index=((startaddress+size)-0xe0000) >> 12;
           type=(types >> (index*8)) & 0xf;
           sizeinc=4*1024;
@@ -1894,7 +2681,7 @@ void initMemTypeRanges()
 
         case 0xe8000 ... 0xeffff:
         {
-          QWORD types=FIX4K_E8000;
+          types=FIX4K_E8000;
           int index=((startaddress+size)-0xe8000) >> 12;
           type=(types >> (index*8)) & 0xf;
           sizeinc=4*1024;
@@ -1903,7 +2690,7 @@ void initMemTypeRanges()
 
         case 0xf0000 ... 0xf7fff:
         {
-          QWORD types=FIX4K_F0000;
+          types=FIX4K_F0000;
           int index=((startaddress+size)-0xf0000) >> 12;
           type=(types >> (index*8)) & 0xf;
           sizeinc=4*1024;
@@ -1912,49 +2699,61 @@ void initMemTypeRanges()
 
         case 0xf8000 ... 0xfffff:
         {
-          QWORD types=FIX4K_F8000;
+          types=FIX4K_F8000;
           int index=((startaddress+size)-0xf8000) >> 12;
           type=(types >> (index*8)) & 0xf;
           sizeinc=4*1024;
           break;
         }
-
-
       }
+
+      sendstringf("Checking fixed mtrr %6 - %6 : %d      (%6)\n", startaddress+size, startaddress+size+sizeinc-1, memtype, types);
+
+      if (memtype==-1)
+        memtype=type;
 
       if (type==memtype) //same type, continue
         size+=sizeinc;
       else //type changed
       {
-        if (memtype!=MTRRDefType.TYPE) //old type wasn't the default, add it to the list
-          addToMemoryRanges(startaddress, size, memtype);
-
+        sendstringf("  -Adding %6 - %6 as type %d\n", startaddress, startaddress+size-1,memtype);
+        addToMemoryRanges(startaddress, size, memtype);
 
         //start a new region
         startaddress=startaddress+size;
-        size=0;
+        size=sizeinc;
         memtype=type;
       }
     }
 
-    if ((size) && (memtype!=MTRRDefType.TYPE)) //last region needs to be added as well
+    if (size) //last region needs to be added as well
+    {
+      sendstringf("  -Adding %6 - %6 as type %d\n", startaddress, startaddress+size-1,memtype);
       addToMemoryRanges(startaddress, size, memtype);
+    }
   }
 
   //check the var fields
+
+  sendstringf("Checking var mtrrs\n");
   for (i=0; i<MTRRCapabilities.VCNT; i++)
   {
     QWORD base=readMSR(IA32_MTRR_PHYSBASE0+i*2);
     QWORD mask=readMSR(IA32_MTRR_PHYSMASK0+i*2);
+
+    sendstringf("Base=%6 Mask=%6\n", base, mask);
+
     int memtype=base & 0xff;
 
-    if ((mask & (1<<11)) && (memtype!=MTRRDefType.TYPE)) //valid
+    if (mask & (1<<11))// && (memtype!=MTRRDefType.TYPE)) //valid
     {
       // Address_Within_Range AND PhysMask = PhysBase AND PhysMask
 
       //strip of useless bits
       base=base & MAXPHYADDRMASKPB;
       mask=mask & MAXPHYADDRMASKPB;
+
+
 
       //find the highest 0 bit in the mask to find the region (this allows for the shitty “discontinuous” ranges)
       int j;
@@ -1964,6 +2763,9 @@ void initMemTypeRanges()
         if ((mask & ((QWORD)1<<j))==0)
         {
           QWORD size=((QWORD)1<<(j+1)); //the last bit with 1
+
+          sendstringf("    var mttr %d: %6 - %6  %d\n", i, base,base+size-1, memtype);
+
           addToMemoryRanges(base, size, memtype);
           break;
         }
@@ -1971,9 +2773,23 @@ void initMemTypeRanges()
     }
   }
 
-  if (loadedOS==0)
+  for (i=0; i<memoryrangesPos; i++)
   {
-    addToMemoryRanges(VirtualToPhysical((void *)0x00400000), 0x00400000, MTC_WP);
+    QWORD address=memoryranges[i].startaddress;
+    QWORD size=memoryranges[i].size;
+
+    sendstringf("Memoryrange %d: %6 -> %6 : %d\n", i, address, address+size, memoryranges[i].memtype);
+  }
+
+  sanitizeMemoryRegions();
+
+  sendstringf("\n\n\nAfter sanitization:\n");
+  for (i=0; i<memoryrangesPos; i++)
+  {
+    QWORD address=memoryranges[i].startaddress;
+    QWORD size=memoryranges[i].size;
+
+    sendstringf("Memoryrange %d: %6 -> %6 : %d\n", i, address, address+size, memoryranges[i].memtype);
   }
 
   csLeave(&memoryrangesCS);
@@ -1984,12 +2800,15 @@ void initMemTypeRanges()
 int remapMTRRTypes(QWORD address UNUSED, QWORD size UNUSED, int type UNUSED)
 {
   //called by the MSR write handler when MTRR registers get changed
+  initMemTypeRanges();
+
   return 1;
 }
 
 int handleMSRWrite_MTRR(void)
 //called when an MTRR msr is written. Figures out what regions have been modified
 {
+  initMemTypeRanges();
   return 1;
 }
 
@@ -2143,8 +2962,11 @@ QWORD EPTMapPhysicalMemory(pcpuinfo currentcpuinfo, QWORD physicalAddress, int f
     if (!fullmap)
     {
       sendstring("Assertion Fail: fullmap is false for a 1 page range");
-      while (1);
+      ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+      while (1) outportb(0x80,0xc3);
     }
+
+   //memtype=0;
 
     sendstringf("mapping %6 as a 4KB page with memtype %d\n", physicalAddress & MAXPHYADDRMASKPB, memtype);
     *(QWORD*)(&pagetable[pagetableindex])=physicalAddress & MAXPHYADDRMASKPB;
@@ -2236,10 +3058,24 @@ VMSTATUS handleEPTMisconfig(pcpuinfo currentcpuinfo UNUSED, VMRegisters *vmregis
     newintinfo.haserrorcode=idtvectorinfo.haserrorcode;
     newintinfo.valid=idtvectorinfo.valid; //should be 1...
     vmwrite(vm_entry_exceptionerrorcode, vmread(vm_idtvector_error)); //entry errorcode
-    vmwrite(0x4016, newintinfo.interruption_information); //entry info field
+    vmwrite(vm_entry_interruptioninfo, newintinfo.interruption_information); //entry info field
     vmwrite(0x401a, vmread(vm_exit_instructionlength)); //entry instruction length
+    return VM_OK;
   }
 
-  return 0;
+  QWORD GuestAddress=vmread(vm_guest_physical_address);
+  QWORD EPTAddress=EPTMapPhysicalMemory(currentcpuinfo, GuestAddress, 0);
+
+  if (EPTAddress)
+  {
+    sendstringf("handleEPTMisconfig(%x) : %6\n",GuestAddress, EPTAddress);
+  }
+  else
+  {
+    sendstringf("handleEPTMisconfig(%x) : fuck\n", GuestAddress);
+  }
+  while (1) outportb(0x80,0xe0);
+
+  return VM_ERROR;
 }
 

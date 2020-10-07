@@ -773,6 +773,7 @@ var
   SetProcessDEPPolicy: function(dwFlags: DWORD): BOOL; stdcall;
   GetProcessDEPPolicy: function(h: HANDLE; dwFlags: PDWORD; permanent: PBOOL):BOOL; stdcall;
 
+  GetProcessId: function(h: HANDLE): PTRUINT; stdcall;
 
 
 
@@ -810,7 +811,7 @@ var
     MAXPHYADDR: byte; //number of bits a physical address can be made up of
     MAXPHYADDRMASK: QWORD=QWORD($fffffffff); //mask to AND with a physical address to strip invalid bits
     MAXPHYADDRMASKPB: QWORD=QWORD($ffffff000); //same as MAXPHYADDRMASK but also aligns it to a page boundary
-
+    MAXPHYADDRMASKPBBIG: QWORD=QWORD($fffe00000);
 
 
 
@@ -880,7 +881,7 @@ begin
             begin
               if (pagedirentry and (1 shl 7))>0 then  //PS==1
               begin
-                PhysicalAddress:=(pagedirentry and MAXPHYADDRMASKPB)+VirtualAddress and $1fffff;
+                PhysicalAddress:=(pagedirentry and MAXPHYADDRMASKPB) + (VirtualAddress and $1fffff);
                 exit(true);
               end
               else
@@ -913,7 +914,6 @@ var
 
   blocksize: integer;
 begin
-
   cr3:=cr3 and MAXPHYADDRMASKPB;
 
   result:=false;
@@ -934,6 +934,7 @@ begin
     inc(currentAddress, x);
     lpBuffer:=pointer(qword(lpbuffer)+x);
     dec(nsize,x);
+
   end;
 
   result:=true;
@@ -975,7 +976,7 @@ end;
 
 function WriteProcessMemory(hProcess: THandle; const lpBaseAddress: Pointer; lpBuffer: Pointer; nSize: DWORD; var lpNumberOfBytesWritten: PTRUINT): BOOL; stdcall;
 var
-  wle: PWriteLogEntry;
+  wle: TWriteLogEntry;
   x: PTRUINT;
 
 begin
@@ -984,23 +985,21 @@ begin
   begin
     if nsize<64*1024*1024 then
     begin
-      getmem(wle, sizeof(TWriteLogEntry));
-      zeromemory(wle, sizeof(TWriteLogEntry));
-
-      wle^.address:=ptruint(lpBaseAddress);
+      wle:=TWriteLogEntry.Create;
+      wle.address:=ptruint(lpBaseAddress);
 
       getmem(wle.originalbytes, nsize);
       ReadProcessMemory(hProcess, lpBaseaddress,wle.originalbytes, nsize, x);
-      wle^.originalsize:=x;
+      wle.originalsize:=x;
     end;
   end;
 
   result:=WriteProcessMemoryActual(hProcess, lpBaseAddress, lpbuffer, nSize, lpNumberOfBytesWritten);
   if result and logwrites and (wle<>nil) then
   begin
-    getmem(wle^.newbytes, lpNumberOfBytesWritten);
-    ReadProcessMemory(hProcess, lpBaseaddress,wle^.newbytes, lpNumberOfBytesWritten, x);
-    wle^.newsize:=x;
+    getmem(wle.newbytes, lpNumberOfBytesWritten);
+    ReadProcessMemory(hProcess, lpBaseaddress,wle.newbytes, lpNumberOfBytesWritten, x);
+    wle.newsize:=x;
     addWriteLogEntryToList(wle);
   end;
 
@@ -1106,7 +1105,9 @@ var
   signed: BOOL;
   r: string;
 begin
-  result:=false;
+  result:=isRunningDBVM;
+  if result then exit;
+
   r:=reason;
   if r='' then r:=rsToUseThisFunctionYouWillNeedToRunDBVM;
 
@@ -1122,23 +1123,19 @@ begin
         signed:=false;
         if isDriverLoaded(@signed) then
         begin
-          if MessageDlg(r, mtWarning, [mbyes, mbno], 0)=mryes then
-          begin
-            LaunchDBVM(-1);
-            if not isRunningDBVM then raise exception.Create(rsDidNotLoadDBVM);
-            result:=true;
-          end;
+          if (MainThreadID=GetCurrentThreadId) and (MessageDlg(r, mtWarning, [mbyes, mbno], 0)<>mryes) then
+            exit;
+
+          LaunchDBVM(-1);
+          if not isRunningDBVM then raise exception.Create(rsDidNotLoadDBVM);
+          result:=true;
         end else
         begin
           //the driver isn't loaded
           if signed then
-          begin
-            raise exception.Create(rsPleaseRebootAndPressF8BeforeWindowsBoots);
-          end
+            raise exception.Create(rsPleaseRebootAndPressF8BeforeWindowsBoots)
           else
-          begin
             raise exception.Create(rsTheDriverNeedsToBeLoadedToBeAbleToUseThisFunction);
-          end;
         end;
       end else raise exception.Create(rsYourCpuMustBeAbleToRunDbvmToUseThisFunction);
     end
@@ -1262,6 +1259,7 @@ begin
     else
     if isAMD then
     begin
+{$ifdef DBVMFORAMDISWORKING}
       //check if it supports SVM
       asm
         push {$ifdef cpu64}rax{$else}eax{$endif}
@@ -1282,6 +1280,10 @@ begin
 
       if ((c shr 2) and 1)=1 then
         result:=true; //SVM is possible
+{$else}
+      result:=false;
+{$endif}
+
     end;
 
   end else result:=true; //it's already running DBVM, of course it's supported
@@ -1297,25 +1299,38 @@ const
 var procbased1flags: DWORD;
 begin
   {$ifdef windows}
-  result:=isIntel and isDBVMCapable; //assume yes until proven otherwise
+  try
+    result:=isDBVMCapable; //assume yes until proven otherwise
 
-  //check if it can use EPT tables in dbvm:
-  //first get the basic msr to see if TRUE procbasedctrls need to be used or old
-  if isIntel and assigned(isDriverLoaded) and isDriverLoaded(nil) then
-  begin
-    result:=false;
-    if (readMSR(IA32_VMX_BASIC_MSR) and (1 shl 55))<>0 then
-      procbased1flags:=readMSR(IA32_VMX_TRUE_PROCBASED_CTLS_MSR) shr 32
-    else
-      procbased1flags:=readMSR(IA32_VMX_PROCBASED_CTLS_MSR) shr 32;
-
-    //check if it has secondary procbased flags
-    if (procbased1flags and (1 shl 31))<>0 then
+    //check if it can use EPT tables in dbvm:
+    //first get the basic msr to see if TRUE procbasedctrls need to be used or old
+    if assigned(isDriverLoaded) and isDriverLoaded(nil) then
     begin
-      //yes, check if EPT can be set to 1
-      if ((readMSR(IA32_VMX_PROCBASED_CTLS2_MSR) shr 32) and (1 shl 1))<>0 then
+      if isintel then
+      begin
+        result:=false;
+        if (readMSR(IA32_VMX_BASIC_MSR) and (1 shl 55))<>0 then
+          procbased1flags:=readMSR(IA32_VMX_TRUE_PROCBASED_CTLS_MSR) shr 32
+        else
+          procbased1flags:=readMSR(IA32_VMX_PROCBASED_CTLS_MSR) shr 32;
+
+        //check if it has secondary procbased flags
+        if (procbased1flags and (1 shl 31))<>0 then
+        begin
+          //yes, check if EPT can be set to 1
+          if ((readMSR(IA32_VMX_PROCBASED_CTLS2_MSR) shr 32) and (1 shl 1))<>0 then
+            result:=true;
+        end;
+
+      end
+      else
+      if isamd then
         result:=true;
     end;
+
+  except
+    //readMSR will error out if ran inside a virtual machine
+    result:=false;
   end;
   //else
   //  result:=result and isRunningDBVM;
@@ -1359,7 +1374,7 @@ begin
     GetThreadsProcessOffset:=@dbk32functions.GetThreadsProcessOffset; //GetProcAddress(DarkByteKernel,'GetThreadsProcessOffset');
     GetThreadListEntryOffset:=@dbk32functions.GetThreadListEntryOffset; //GetProcAddress(DarkByteKernel,'GetThreadListEntryOffset');
     GetDebugportOffset:=@dbk32functions.GetDebugportOffset; //GetProcAddresS(DarkByteKernel,'GetDebugportOffset');
-    GetPhysicalAddress:=@dbk32functions.GetPhysicalAddress; //GetProcAddresS(DarkByteKernel,'GetPhysicalAddress');
+
     GetCR4:=@dbk32functions.GetCR4; //GetProcAddress(DarkByteKernel,'GetCR4');
     GetCR3:=@dbk32functions.GetCR3;
 //    SetCR3:=@dbk32functions.SetCR3;
@@ -1379,7 +1394,7 @@ begin
     GetProcessNameFromID:=@dbk32functions.GetProcessNameFromID;
     GetProcessNameFromPEProcess:=@dbk32functions.GetProcessNameFromPEProcess;
 
-    IsValidHandle:=@dbk32functions.IsValidHandle;
+
 
 
     GetIDTs:=@dbk32functions.GetIDTs;
@@ -1403,11 +1418,9 @@ begin
     GetSDTEntry:= @dbk32functions.GetSDTEntry;
     GetSSDTEntry:=@dbk32functions.GetSSDTEntry;
 
-    isDriverLoaded:=@dbk32functions.isDriverLoaded;
     LaunchDBVM:=@dbk32functions.LaunchDBVM;
 
-    ReadPhysicalMemory:=@dbk32functions.ReadPhysicalMemory;
-    WritePhysicalMemory:=@dbk32functions.WritePhysicalMemory;
+
 
     CreateRemoteAPC:=@dbk32functions.CreateRemoteAPC;
 //    SetGlobalDebugState:=@SetGlobalDebugState;
@@ -1763,6 +1776,7 @@ end;
 {$endif}
 procedure initMaxPhysMask;
 var cpuidr: TCPUIDResult;
+iswow: BOOL;
 begin
   cpuidr:=CPUID($80000008,0);
   MAXPHYADDR:=cpuidr.eax and $ff;
@@ -1770,6 +1784,22 @@ begin
   MAXPHYADDRMASK:=MAXPHYADDRMASK shr MAXPHYADDR;
   MAXPHYADDRMASK:=not (MAXPHYADDRMASK shl MAXPHYADDR);
   MAXPHYADDRMASKPB:=MAXPHYADDRMASK and qword($fffffffffffff000);
+
+  {$ifdef cpu64}
+  MAXPHYADDRMASKPBBIG:=MAXPHYADDRMASK and qword($ffffffffffe00000);
+  {$else}
+  MAXPHYADDRMASKPBBIG:=MAXPHYADDRMASK and qword($ffffffffffc00000);
+
+  if assigned(IsWow64Process) then
+  begin
+    if IsWow64Process(GetCurrentProcess,iswow) then
+    begin
+      if iswow then
+        MAXPHYADDRMASKPBBIG:=MAXPHYADDRMASK and qword($ffffffffffe00000);
+    end;
+  end;
+
+  {$endif}
 end;
 
 {$ifdef windows}
@@ -1912,8 +1942,7 @@ initialization
   SetProcessDEPPolicy:=GetProcAddress(WindowsKernel, 'SetProcessDEPPolicy');
   GetProcessDEPPolicy:=GetProcAddress(WindowsKernel, 'GetProcessDEPPolicy');
 
-
-
+  GetProcessId:=GetProcAddress(WindowsKernel, 'GetProcessId');
 
   psa:=loadlibrary('Psapi.dll');
   EnumDeviceDrivers:=GetProcAddress(psa,'EnumDeviceDrivers');
@@ -1924,8 +1953,11 @@ initialization
   ChangeWindowMessageFilter:=GetProcAddress(u32,'ChangeWindowMessageFilter');
 
 
-
-
+  ReadPhysicalMemory:=@dbk32functions.ReadPhysicalMemory;
+  WritePhysicalMemory:=@dbk32functions.WritePhysicalMemory;
+  GetPhysicalAddress:=@dbk32functions.GetPhysicalAddress;
+  IsValidHandle:=@dbk32functions.IsValidHandle;
+  isDriverLoaded:=@dbk32functions.isDriverLoaded;
 
 
   {$ifdef windows}

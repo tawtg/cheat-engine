@@ -24,16 +24,21 @@ uses {$ifdef darwin}macport,messages,lcltype,{$endif}
      {$ifdef windows}jwawindows, windows,commctrl,{$endif}
      sysutils, LCLIntf, forms, classes, controls, comctrls, stdctrls, extctrls, symbolhandler,
      cefuncproc, NewKernelHandler, graphics, disassemblerviewlinesunit, disassembler,
-     math, lmessages, menus, dissectcodethread;
+     math, lmessages, menus, DissectCodeThread
+
+     {$ifdef USELAZFREETYPE}
+     ,cefreetype,FPCanvas, EasyLazFreeType, LazFreeTypeFontCollection, LazFreeTypeIntfDrawer,
+     LazFreeTypeFPImageDrawer, IntfGraphics, fpimage, graphtype
+     {$endif}
+     ;
 
 
 
 type TShowjumplineState=(jlsAll, jlsOnlyWithinRange);     
 
 type TDisassemblerSelectionChangeEvent=procedure (sender: TObject; address, address2: ptruint) of object;
-
 type TDisassemblerExtraLineRender=function(sender: TObject; Address: ptruint; AboveInstruction: boolean; selected: boolean; var x: integer; var y: integer): TRasterImage of object;
-
+type TDisassemblerViewOverrideCallback=procedure(address: ptruint; var addressstring: string; var bytestring: string; var opcodestring: string; var parameterstring: string; var specialstring: string) of object;
 
 
 type TDisassemblerview=class(TPanel)
@@ -83,6 +88,11 @@ type TDisassemblerview=class(TPanel)
     fhidefocusrect: boolean;
 
     scrolltimer: ttimer;
+
+    fOnDisassemblerViewOverride: TDisassemblerViewOverrideCallback;
+
+
+
     procedure updateScrollbox;
     procedure scrollboxResize(Sender: TObject);
 
@@ -115,6 +125,8 @@ type TDisassemblerview=class(TPanel)
     procedure setJumplineState(state: tshowjumplinestate);
     procedure synchronizeDisassembler;
     procedure StatusInfoLabelCopy(sender: TObject);
+
+
   protected
     procedure HandleSpecialKey(key: word);
     procedure WndProc(var msg: TMessage); override;
@@ -134,6 +146,14 @@ type TDisassemblerview=class(TPanel)
 
     LastFormActiveEvent: qword;
 
+    {$ifdef USELAZFREETYPE}
+    FTFont: TFreeTypeFont;
+    FTFontb: TFreeTypeFont; //bold version
+    IntfImage: TLazIntfImage;
+    drawer: TIntfFreeTypeDrawer;
+    {$endif}
+
+    procedure DoDisassemblerViewLineOverride(address: ptruint; var addressstring: string; var bytestring: string; var opcodestring: string; var parameterstring: string; var specialstring: string);
 
     procedure reinitialize; //deletes the assemblerlines
 
@@ -170,21 +190,31 @@ type TDisassemblerview=class(TPanel)
     property PopupMenu: TPopupMenu read getOriginalPopupMenu write SetOriginalPopupMenu;
     property Osb: TBitmap read offscreenbitmap;
     property OnExtraLineRender: TDisassemblerExtraLineRender read fOnExtraLineRender write fOnExtraLineRender;
+    property OnDisassemblerViewOverride: TDisassemblerViewOverrideCallback read fOnDisassemblerViewOverride write fOnDisassemblerViewOverride;
 end;
 
 
 implementation
 
-uses processhandlerunit, parsers, Clipbrd;
+uses processhandlerunit, parsers, Clipbrd, Globals;
 
 resourcestring
   rsSymbolsAreBeingLoaded = 'Symbols are being loaded (%d %%)';
+  rsStructuresAreBeingParsed = 'Structures are being parsed';
+  rsExtendedDebugInfoIsLoaded = 'Extended debug info is being loaded (%d %%)';
   rsPleaseOpenAProcessFirst = 'Please open a process first';
   rsAddress = 'Address';
   rsBytes = 'Bytes';
   rsOpcode = 'Opcode';
   rsComment = 'Comment';
   rsCopy = 'Copy';
+
+procedure TDisassemblerview.DoDisassemblerViewLineOverride(address: ptruint; var addressstring: string; var bytestring: string; var opcodestring: string; var parameterstring: string; var specialstring: string);
+var i: integer;
+begin
+  if assigned(fOnDisassemblerViewOverride) then
+    fOnDisassemblerViewOverride(address, addressstring, bytestring, opcodestring, parameterstring, specialstring);
+end;
 
 procedure TDisassemblerview.SetOriginalPopupMenu(p: Tpopupmenu);
 begin
@@ -632,6 +662,7 @@ procedure TDisassemblerview.synchronizeDisassembler;
 begin
   visibleDisassembler.showmodules:=symhandler.showModules;
   visibleDisassembler.showsymbols:=symhandler.showsymbols;
+  visibleDisassembler.showsections:=symhandler.showsections;
 end;
 
 procedure TDisassemblerview.StatusInfoLabelCopy(sender: TObject);
@@ -694,6 +725,10 @@ var
   selstart, selstop: ptrUint;
   description: string;
   x: ptrUint;
+
+  {$ifdef USELAZFREETYPE}
+  b: tbitmap;
+  {$endif}
 begin
   inherited update;
 
@@ -703,10 +738,19 @@ begin
 
   //if gettickcount-lastupdate>50 then
   begin
-    if (not symhandler.isloaded) and (not symhandler.haserror) then
+    if (symhandler.loadingExtendedData or symhandler.parsingStructures or (not symhandler.isloaded)) and (not symhandler.haserror) then
     begin
       if processid>0 then
-        statusinfolabel.Caption:=format(rsSymbolsAreBeingLoaded,[symhandler.progress])
+      begin
+       // symhandler.currentState:=
+        if symhandler.loadingExtendedData then
+          statusinfolabel.Caption:=format(rsExtendedDebugInfoIsLoaded,[symhandler.extendedDataProgess])
+        else
+        if symhandler.parsingStructures then
+          statusinfolabel.Caption:=rsStructuresAreBeingParsed
+        else
+          statusinfolabel.Caption:=format(rsSymbolsAreBeingLoaded,[symhandler.progress])
+      end
       else
         statusinfolabel.Caption:=rsPleaseOpenAProcessFirst;
 
@@ -718,7 +762,7 @@ begin
       else
         statusinfolabel.Font.Color:=clWindowText;
 
-      statusinfolabel.Caption:=AnsiToUtf8(symhandler.getnamefromaddress(TopAddress,symhandler.showsymbols, symhandler.showmodules,nil,nil,8,false));
+      statusinfolabel.Caption:=AnsiToUtf8(symhandler.getnamefromaddress(TopAddress,symhandler.showsymbols, symhandler.showmodules,symhandler.showsections , nil,nil,8,false));
     end;
 
     //initialize bitmap dimensions
@@ -729,8 +773,20 @@ begin
     offscreenbitmap.Height:=discanvas.Height;
 
     //clear bitmap
-    offscreenbitmap.Canvas.Brush.Color:=clBtnFace;
-    offscreenbitmap.Canvas.FillRect(rect(0,0,offscreenbitmap.Width, offscreenbitmap.Height));
+    {$ifdef USELAZFREETYPE}
+    if (not UseOriginalRenderingSystem) and (drawer<>nil) then
+    begin
+      if (IntfImage.Width<>offscreenbitmap.width) or (IntfImage.Height<>offscreenbitmap.Height) then
+        IntfImage.SetSize(offscreenbitmap.width, offscreenbitmap.height);
+
+      drawer.FillPixels(TColorToFPColor(ColorToRGB(clBtnFace)));
+    end
+    else
+    {$endif}
+    begin
+      offscreenbitmap.Canvas.Brush.Color:=clBtnFace;
+      offscreenbitmap.Canvas.FillRect(rect(0,0,offscreenbitmap.Width, offscreenbitmap.Height));
+    end;
 
     currenttop:=-fTopSubline;
     i:=0;
@@ -755,6 +811,17 @@ begin
       inc(i);
     end;
 
+    {$ifdef USELAZFREETYPE}
+    if (not UseOriginalRenderingSystem) and (IntfImage<>nil) then
+    begin
+      b:=tbitmap.create();
+      b.LoadFromIntfImage(IntfImage);
+      offscreenbitmap.Canvas.Draw(0,0,b);
+      b.free;
+    end;
+    {$endif}
+
+
     fTotalvisibledisassemblerlines:=i;
 
     x:=fSelectedAddress;
@@ -765,6 +832,7 @@ begin
 
     if ShowJumplines then
       renderjumplines;
+
 
 
     if not isupdating then
@@ -1106,6 +1174,23 @@ var
   mi: TMenuItem;
 begin
   inherited create(AOwner);
+
+  {$ifdef USELAZFREETYPE}
+  if loadCEFreeTypeFonts then
+  begin
+    FTFont:=TFreeTypeFont.Create;
+    FTFont.Name:='Courier New';
+
+
+    FTFontb:=TFreeTypeFont.Create;
+    FTFontb.Name:='Courier New';
+    FTFontb.Style:=[ftsBold];
+    FTFontb.Hinted:=false;
+
+    IntfImage:=TLazIntfImage.Create(0,0, [riqfRGB]);
+    drawer:=TIntfFreeTypeDrawer.Create(IntfImage);
+  end;
+  {$endif}
 
   jlSpacing:=2;
   jlThickness:=1;

@@ -4,7 +4,7 @@ function ceshare.QueryTableComments(entry, startindex)
   if startindex then
     parameters=parameters..'startindex='..startindex
   end
-  s=ceshare.QueryXURL('QueryTableComments.php', parameters)
+  local s=ceshare.QueryXURL('QueryTableComments.php', parameters)
   if s then
     if s.Comments then
       result={}
@@ -61,7 +61,7 @@ function ceshare.ViewComments(entry)
         f.Caption='Comments'
         
         f.btnSend.OnClick=function(s)
-          r=ceshare.QueryXURL('AddComment.php', 'id='..entry.ID..'&comment='..ceshare.url_encode(ceshare.CommentsFrm.mMessage.Lines.Text))
+          local r=ceshare.QueryXURL('AddComment.php', 'id='..entry.ID..'&comment='..ceshare.url_encode(ceshare.CommentsFrm.mMessage.Lines.Text))
           if r then        
             ceshare.ViewComments(entry)
           end      
@@ -75,7 +75,30 @@ function ceshare.ViewComments(entry)
       --ceshare.CommentsFrm.lblNext25.Enabled=#ceshare.CurrentRequests>25
       
       ceshare.CommentsFrm.lblPrevious25.Visible=false
-      ceshare.CommentsFrm.lblNext25.Visible=false      
+      ceshare.CommentsFrm.lblNext25.Visible=false  
+
+      ceshare.CommentsFrm.btnSend.Font.Size=20 
+
+      --just a general size
+      local preferedWidth=ceshare.CommentsFrm.Canvas.getTextWidth('X')*60
+      local preferedHeight=ceshare.CommentsFrm.Canvas.getTextHeight('X')*6
+      
+
+      if ceshare.CommentsFrm.mMessage.ClientHeight<preferedHeight then
+        ceshare.CommentsFrm.ControlPanel.Height=ceshare.CommentsFrm.ControlPanel.Height+(preferedHeight-ceshare.CommentsFrm.mMessage.ClientHeight)
+      end
+      
+      if ceshare.CommentsFrm.mMessage.ClientWidth<preferedWidth then
+        ceshare.CommentsFrm.Width=ceshare.CommentsFrm.Width+(preferedWidth-ceshare.CommentsFrm.mMessage.ClientWidth)
+      end
+      
+      if ceshare.CommentsFrm.Height<3*ceshare.CommentsFrm.ControlPanel.Height then
+        ceshare.CommentsFrm.Height=3*ceshare.CommentsFrm.ControlPanel.Height
+      end   
+      
+      
+      
+           
 
       --build gui controls for the requests and put them in the scrollbox  
       while ceshare.CommentsFrm.MessageBox.ControlCount>0 do

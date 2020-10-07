@@ -8,8 +8,9 @@ uses {$ifdef darwin}macport,macportdefines,{$endif}
      {$ifdef windows}jwawindows, windows,{$endif}
      ExtCtrls , comctrls, Graphics, forms, StdCtrls,sysutils,Controls,
      SyncObjs,dialogs,LCLIntf,classes,autoassembler,
-     CEFuncProc,NewKernelHandler,CEDebugger,kerneldebugger, plugin, math,
-     debugHelper, debuggertypedefinitions, typinfo, ceguicomponents, strutils, commonTypeDefs;
+     CEFuncProc,NewKernelHandler,CEDebugger,KernelDebugger, plugin, math,
+     debugHelper, debuggertypedefinitions, typinfo, ceguicomponents, strutils,
+     commonTypeDefs, luahandler, lua;
 
 type TPluginFunc=function(parameters: pointer): pointer;
 function pluginsync(func: TPluginFunc; parameters: pointer): pointer; stdcall;
@@ -124,11 +125,16 @@ function ce_setProperty(c: tobject; propertyname: pchar; value: pchar): BOOL; st
 function ce_getProperty(c: tobject; propertyname: pchar; value: pchar; maxsize: integer): integer; stdcall;
 
 
+//7.1
+function plugin_checksynchronize(timeout: integer):boolean; stdcall;
+procedure plugin_processmessages; stdcall;
+function plugin_getluastate: Plua_State; stdcall;
+
 implementation
 
 uses MainUnit,MainUnit2, AdvancedOptionsUnit, Assemblerunit,disassembler,
      frmModifyRegistersUnit, formsettingsunit, symbolhandler,frmautoinjectunit,
-     {$ifdef windows}manualModuleLoader,{$endif} MemoryRecordUnit, MemoryBrowserFormUnit, LuaHandler,
+     {$ifdef windows}manualModuleLoader,{$endif} MemoryRecordUnit, MemoryBrowserFormUnit,
      ProcessHandlerUnit, ProcessList, BreakpointTypeDef;
 
 resourcestring
@@ -444,7 +450,7 @@ var
 begin
   result:=false;
   try
-    s:=symhandler.getNameFromAddress(address,true,true);
+    s:=symhandler.getNameFromAddress(address,true,true, false);
 
     l:=min(maxnamesize-1, length(s));
     copymemory(name,@s[1],l);
@@ -625,7 +631,12 @@ begin
     symhandler.waitforsymbolsloaded;
     result:=true;
   except
-    result:=false;
+    on e:exception do
+    begin
+      outputdebugstring('ce_InjectDLL('''+dllname+''','''+functiontocall+''') error: '+e.Message);
+      result:=false;
+    end;
+
   end;
 end;
 
@@ -2594,10 +2605,27 @@ begin
 end;
 
 
+function plugin_checksynchronize(timeout: integer):boolean; stdcall;
+begin
+  result:=CheckSynchronize(timeout);
+end;
+
+procedure plugin_processmessages; stdcall;
+begin
+  Application.ProcessMessages;
+end;
+
+function plugin_getluastate: Plua_State; stdcall;
+begin
+  result:=GetLuaState;
+end;
+
 initialization
   plugindisassembler:=TDisassembler.create;
   plugindisassembler.showsymbols:=false;
   plugindisassembler.showmodules:=false;
+  plugindisassembler.showsections:=false;
+
   plugindisassembler.isdefault:=false;
 
   ComponentFunctionHandlerClass:=TComponentFunctionHandlerClass.create;

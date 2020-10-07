@@ -11,23 +11,31 @@ function ceshare.getInternet()
   return ceshare.internet
 end
 
+local pathsep
+if getOperatingSystem()==0 then
+  pathsep=[[\]]
+else
+  pathsep=[[/]]
+end
+
 ceshare.version=-1
-ceshare.path=getCheatEngineDir()..[[autorun\ceshare\]]
-ceshare.formpath=ceshare.path..[[\forms\]]
+ceshare.path=getAutoRunPath()..'ceshare'..pathsep
+ceshare.formpath=ceshare.path..pathsep..'forms'..pathsep
+ceshare.imagepath=ceshare.path..pathsep..'images'..pathsep
 
 if package.loaded.xmlSimple==nil then
-  package.path=package.path..';'..getCheatEngineDir()..[[autorun\xml\?.lua]]
+  package.path=package.path..';'..getAutoRunPath()..'xml'..pathsep..'?.lua'
 else
   package.loaded.xmlSimple=nil
 end
-xmlParser = require("xmlSimple").newParser()
+ceshare.xmlParser = require("xmlSimple").newParser()
 
 
 package.path=package.path..';'..ceshare.path..[[?.lua]]
 
 function loadCEShare()
   ceshare.settings=getSettings('ceshare')
-  ceshare.secondaryIdentifierCode=getSettings('ceshare\\secondaryIdenfierCode')
+  ceshare.secondaryIdentifierCode=getSettings('ceshare\\secondaryIdentifierCode')
 
   require("ceshare_account")
   require("ceshare_publish")
@@ -36,36 +44,51 @@ function loadCEShare()
   require("ceshare_permissions")
   require("ceshare_comments")
   require("ceshare_requests")
+  require("ceshare_fulltablelist")
   
   --add "CE Share menu items"
   local miCESHARETopMenuItem=createMenuItem(MainForm)
-  miCESHARETopMenuItem.Caption='CE Share'
+  miCESHARETopMenuItem.Caption=translate('CE Share')
   MainForm.Menu.Items.insert(2,miCESHARETopMenuItem) --in front of table
 
   local miCheckForCheats=createMenuItem(MainForm)
-  miCheckForCheats.Caption='Check for mods/cheats for current process'
+  miCheckForCheats.Caption=translate('Check for mods/cheats for current process')
   miCheckForCheats.OnClick=ceshare.CheckForCheatsClick
   miCheckForCheats.Default=true
   miCheckForCheats.Name='miCheckForCheats'
   miCESHARETopMenuItem.add(miCheckForCheats)
   
   local miRequestCheats=createMenuItem(MainForm)
-  miRequestCheats.Caption='Request and check other requests for mods/cheats for current process'
+  miRequestCheats.Caption=translate('Request and check other requests for mods/cheats for current process')
   miRequestCheats.OnClick=ceshare.RequestForCheatsClick
   miRequestCheats.Name='miRequestCheats'
   miCESHARETopMenuItem.add(miRequestCheats)  
 
   local miPublishCheat=createMenuItem(MainForm)
-  miPublishCheat.Caption='Publish/Update table'
+  miPublishCheat.Caption=translate('Publish/Update table')
   miPublishCheat.OnClick=ceshare.PublishCheatClick
   miPublishCheat.Name='miPublishCheat';
   miPublishCheat.Visible=false
   miCESHARETopMenuItem.add(miPublishCheat)
+  
+  local miDivider=createMenuItem(MainForm)
+  miDivider.Caption='-'
+  miDivider.Visible=true
+  miCESHARETopMenuItem.add(miDivider)
+  
+  local miViewAllTables=createMenuItem(MainForm)
+  miViewAllTables.Caption=translate('View all available tables')
+  miViewAllTables.OnClick=ceshare.ViewAllTablesClick
+  miViewAllTables.Name='miViewAllTables';
+  miViewAllTables.Visible=true
+  miCESHARETopMenuItem.add(miViewAllTables)  
+  
+  
 
   --check requestsc
   
   miCESHARETopMenuItem.OnClick=function(s)      
-    loggedin=ceshare.LoggedIn or false
+    local loggedin=ceshare.LoggedIn or false
     miPublishCheat.Visible=true
     
     local canUpdate=false    
@@ -142,23 +165,28 @@ else
   --first time setup, ask the user for a ceshare base url
   ceshare.initialSetup=createFormFromFile(ceshare.formpath..'InitialSetup.FRM')
   loadCEShareServerListInCombobox(ceshare.initialSetup.cbCEShareURL)
- 
+  ceshare.base=''  
   
   ceshare.initialSetup.Position='poScreenCenter'
   ceshare.initialSetup.AutoSize=true
-  if ceshare.initialSetup.showModal()==mrOK then
+  ceshare.initialSetup.formStyle='fsStayOnTop'
+  ceshare.initialSetup.btnOK.OnClick=function()
     if ceshare.initialSetup.cbCEShareURL.ItemIndex==-1 then
       ceshare.base=ceshare.initialSetup.cbCEShareURL.Text
     else
       ceshare.base=ceshare.ceshareserverlist[ceshare.initialSetup.cbCEShareURL.ItemIndex+1].base
     end   
-  else
-    ceshare.base=''  
+  
+    local f=io.open(ceshare.path..[[server.txt]],'wb')
+    f:write(ceshare.base)
+    f:close()  
+
+    ceshare.initialSetup.close()    
   end
   
-  f=io.open(ceshare.path..[[server.txt]],'wb')
-  f:write(ceshare.base)
-  f:close()  
+  ceshare.initialSetup.btnCancel.OnClick=function() ceshare.initialSetup.close() end
+  
+  ceshare.initialSetup.show()
 end
 
 ceshare.ceversion=getCEVersion()
@@ -174,7 +202,7 @@ ceshare.settingsCBBase.Text=ceshare.base
 ceshare.settingsCBBase.Align='alTop'
 
 local lblCEShareLabel=createLabel(ceshare.settingsTab)
-lblCEShareLabel.Caption='CEShare community URL'
+lblCEShareLabel.Caption=translate('CEShare community URL')
 lblCEShareLabel.Align='alTop'
 
 
@@ -187,14 +215,15 @@ ceshare.settingsTab.OnShow=function()
 end
 
 local insertNode=sf.SettingsTreeView.Items[3]  --insert it near the unrandomizer since it'd be used as often as that setting
-local node=sf.SettingsTreeView.Items.insert(insertNode, "CEShare")
+local node=sf.SettingsTreeView.Items.insert(insertNode, translate("CEShare"))
 node.data=userDataToInteger(ceshare.settingsTab)
 
 local originalSettingsCloseEvent=sf.OnClose
-sf.OnClose=function(s)
-  local r=caHide
+sf.OnClose=function(s, closeAction)
+   
+  local r=closeAction
   if originalSettingsCloseEvent then
-    r=originalSettingsCloseEvent(s)
+    r=originalSettingsCloseEvent(s, closeAction)
   end
   
   if s.ModalResult==mrOK then
@@ -260,7 +289,7 @@ function ceshare.parseResult(r, skipErrorDialog)
   
   if r then
     if (r:sub(1,2)=='<?') then
-      xml=xmlParser:ParseXmlText(r)
+      xml=ceshare.xmlParser:ParseXmlText(r)
       if xml then
         if xml.invalidsession then --This requires a valid session. Spawn a login screen
           if ceshare.spawnLoginDialog() then --try again after logging in
@@ -278,7 +307,7 @@ function ceshare.parseResult(r, skipErrorDialog)
           if f then
             --check registry if it's ok to run this script, or ask if it should be loaded
             local d=createForm(false)
-            d.Caption='Secondary identifier code'
+            d.Caption=translate('Secondary identifier code')
             d.BorderStyle='bsSizeable'
             
             local pnlBtns=createPanel(d)
@@ -288,11 +317,11 @@ function ceshare.parseResult(r, skipErrorDialog)
             btnAllow.AutoSize=true
             btnCancel.AutoSide=true
             
-            btnAllow.Caption='Allow'
+            btnAllow.Caption=translate('Allow')
             btnAllow.Default=true
             btnAllow.ModalResult=mrOK
             
-            btnCancel.Caption='Cancel'
+            btnCancel.Caption=translate('Cancel')
             btnCancel.Cancel=true
             btnCancel.ModalResult=mrCancel
             
@@ -308,7 +337,7 @@ function ceshare.parseResult(r, skipErrorDialog)
             
             
             local header=createLabel(pnlHeaderAndEditor)
-            header.caption='This process needs a special identifier to set it apart from others with the same name. To generate this identifier the below code is needed. Do you agree with the execution of this code to generate the identifier?'
+            header.caption=translate('This process needs a special identifier to set it apart from others with the same name. To generate this identifier the below code is needed. Do you agree with the execution of this code to generate the identifier?')
             header.align='alTop'
             header.WordWrap=true
             
@@ -365,19 +394,19 @@ function ceshare.parseResult(r, skipErrorDialog)
 
       else
         if (skipErrorDialog==nil) or (skipErrorDialog==false) then
-          ceshare.showError('Error:'..r)  
+          ceshare.showError(translate('Error:')..r)  
         end
         return nil,false     
       end 
     else
       if (skipErrorDialog==nil) or (skipErrorDialog==false) then
-        ceshare.showError("Invalid reply from server:"..r)  
+        ceshare.showError(translate("Invalid reply from server:")..r)  
       end
       return nil,false
     end
   else
     if (skipErrorDialog==nil) or (skipErrorDialog==false) then
-      ceshare.showError("Server did not respond") --..ceshare.debug)
+      ceshare.showError(translate("Server did not respond")) --..ceshare.debug)
     end
     return nil,false
   end
@@ -410,9 +439,3 @@ end
 if (ceshare.base) and (ceshare.base~='') then
   loadCEShare() 
 end 
-
-
-
-
-
-

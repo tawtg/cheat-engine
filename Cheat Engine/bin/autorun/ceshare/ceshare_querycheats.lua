@@ -12,9 +12,7 @@ end
 function ceshare.QueryProcessCheats(processname, headermd5, updatableOnly)
   local modulelist=ceshare.enumModules2()
   local result=nil
-  --local url=ceshare.base..'QueryProcessCheats.php'
   local parameters='processname='..ceshare.url_encode(processname)
-  --print(url..'?'..parameters)
   
   if isKeyPressed(VK_CONTROL)==false then  --control lets you get a new script if needed
     local secondaryIdentifierCode=ceshare.secondaryIdentifierCode.Value[processname:lower()]
@@ -34,8 +32,8 @@ function ceshare.QueryProcessCheats(processname, headermd5, updatableOnly)
   
   
   --local r=ceshare.getInternet().postURL(url,parameters)
-    --local s=xmlParser:ParseXmlText(r)
-    s=ceshare.QueryXURL('QueryProcessTables.php', parameters)
+    --local s=ceshare.xmlParser:ParseXmlText(r)
+    local s=ceshare.QueryXURL('QueryProcessTables.php', parameters)
     if s then
       if s.CheatList then
         --parse the list
@@ -63,6 +61,7 @@ function ceshare.QueryProcessCheats(processname, headermd5, updatableOnly)
               entry.SecondaryFullFileHash=CheatEntry["@secondaryfullfilehashmd5"]
               entry.CheckCode=CheatEntry["@luaScriptToCheckForMatch"]
               entry.Description=CheatEntry["@description"]
+              entry.Url=CheatEntry["@url"]
               entry.DataType=CheatEntry["@datatype"]
               entry.Signed=CheatEntry["@signed"]=='1'
               entry.YourRating=tonumber(ceshare.settings.Value['voted'..entry.ID])
@@ -142,7 +141,6 @@ function ceshare.QueryProcessCheats(processname, headermd5, updatableOnly)
               if entry.RatingCount>0 then
                 entry.sortscore=entry.sortscore+(entry.Rating/(entry.RatingCount*0.9)) --total votes does count as well
               end
-              
 
               table.insert(result, entry)
             end
@@ -188,12 +186,13 @@ function ceshare.QueryCurrentProcess(updatableOnly)
   end
 end
 
-function ceshare.CheckForCheatsClick(s)
+function ceshare.CheckForCheatsClick(s, overrideProcess)
   --spawn the cheatbrowser
   
   if ceshare.CheatBrowserFrm==nil then
     local f=createFormFromFile(ceshare.formpath..'BrowseCheats.FRM')
     f.lblProcessName.Caption=process
+    f.Name='ceshare_CheatBrowserFrm'
 
     ceshare.CheatBrowserFrm=f
 
@@ -202,42 +201,82 @@ function ceshare.CheckForCheatsClick(s)
     f.pnlDescription.Constraints.MinHeight=h
     
     --configure base state and add events
+    
+    ceshare.CheatBrowserFrm.OnDestroy=function(f)
+      f.saveFormPosition({ceshare.CheatBrowserFrm.CEPanel1.Height})
+    end
 
+    ceshare.CheatBrowserFrm.lvCheats.Font.Size=12
     ceshare.CheatBrowserFrm.lvCheats.OnSelectItem=function(sender, listitem, selected)
       if selected and listitem.index then
         local desc=ceshare.CurrentQuery[listitem.index+1].Description
         
-        ceshare.CheatBrowserFrm.imgDescription.Width=ceshare.CheatBrowserFrm.ScrollBox1.ClientWidth
-        ceshare.CheatBrowserFrm.imgDescription.Height=ceshare.CheatBrowserFrm.ScrollBox1.ClientHeight
+        ceshare.CheatBrowserFrm.mDescription.Lines.Text=desc
         
-        ceshare.CheatBrowserFrm.imgDescription.Picture.Bitmap.Canvas.Brush.Color=0xffffff
-        ceshare.CheatBrowserFrm.imgDescription.Picture.Bitmap.Width=ceshare.CheatBrowserFrm.ScrollBox1.Width
-        ceshare.CheatBrowserFrm.imgDescription.Picture.Bitmap.Height=ceshare.CheatBrowserFrm.ScrollBox1.Height
-
-        ceshare.CheatBrowserFrm.imgDescription.Picture.Bitmap.Canvas.fillRect(0,0,ceshare.CheatBrowserFrm.ScrollBox1.Width,ceshare.CheatBrowserFrm.ScrollBox1.Height)
-
-        local imgrect={Left=0,Top=0,Right=ceshare.CheatBrowserFrm.imgDescription.Width, Bottom=ceshare.CheatBrowserFrm.imgDescription.Height}
-
-        
-
-        local r=ceshare.CheatBrowserFrm.imgDescription.Picture.Bitmap.Canvas.textRect(imgrect,0,0,desc);
-        if r then --ce 7.1+ gets the actually needed rect
-
-        else
-
-        end
         
         --[[local rating=ceshare.CurrentQuery[listitem.index+1].YourRating    
         if rating then
           --trigger a refresh
           ceshare.RateStars[rating].img.OnMouseLeave(ceshare.RateStars[rating]) 
         end--]]
+        
+        ceshare.CheatBrowserFrm.lblContact.Visible=true
+        ceshare.CheatBrowserFrm.lblContact.Font.Size=7
       end
       
       ceshare.RateStars[1].img.OnMouseLeave(ceshare.RateStars[1]) 
   
 
     end
+    
+    ceshare.CheatBrowserFrm.lvCheats.OnAdvancedCustomDrawSubItem=function(Sender, Item, SubItemIndex, State, Stage)
+      if SubItemIndex==7 then --link subitem
+        if ceshare.CurrentQuery[Item.index+1].Url and (ceshare.CurrentQuery[Item.index+1].Url~='') then
+          if Stage==cdPostPaint then
+            local rect=Item.DisplayRectSubItem(7,drBounds)  
+            Sender.Canvas.stretchDraw(rect, ceshare.linkButton)
+          end
+        
+        end
+      end      
+
+      return true --return true for DefaultDraw
+    end
+    
+    ceshare.CheatBrowserFrm.lvCheats.OnMouseMove=function(sender, x, y)
+      local item=sender.getItemAt(x,y)
+      if item then
+        if ceshare.CurrentQuery[item.index+1].Url and (ceshare.CurrentQuery[item.index+1].Url~='') then
+          local linkrect=item.DisplayRectSubItem(7,drBounds)
+        
+          if (x>linkrect.Left) and (x<linkrect.Right) and
+             (y>linkrect.Top) and (y<linkrect.Bottom) then
+            ceshare.CheatBrowserFrm.lvCheats.Cursor=crHandPoint
+            return 
+          end 
+        end        
+      end
+      if ceshare.CheatBrowserFrm.lvCheats.Cursor==crHandPoint then
+        ceshare.CheatBrowserFrm.lvCheats.Cursor=crDefault  
+      end
+    end
+
+    ceshare.CheatBrowserFrm.lvCheats.OnMouseDown=function(sender, button, x, y)
+      local item=sender.getItemAt(x,y)
+      if item then      
+        local url=ceshare.CurrentQuery[item.index+1].Url
+        if url and (url~='') then   
+          local linkrect=item.DisplayRectSubItem(7,drBounds)  
+          if (x>linkrect.Left) and (x<linkrect.Right) and
+             (y>linkrect.Top) and (y<linkrect.Bottom) then             
+            if (string.sub(url,1,7)=='http://') or string.sub(url,1,8)=='https://' then
+              shellExecute(url)
+            end
+          end
+        end  
+      end
+    end
+    
     
     ceshare.CheatBrowserFrm.btnLoadTable.OnClick=function(s)
       local index=ceshare.CheatBrowserFrm.lvCheats.ItemIndex
@@ -252,6 +291,34 @@ function ceshare.CheckForCheatsClick(s)
           while AddressList.Count>0 do
             AddressList[0].destroy()
           end
+        end
+        
+        if not ceshare.decodeFunctionHooked then
+          local originalDecode=decodeFunction
+          local noToAll=false
+          local yesToAll=false
+          decodeFunction=function(data)
+            local decodeIt=yesToAll
+
+            if (noToAll or yesToAll) == false then 
+              local r=messageDialog(translate('The current table is trying to load obfuscated code. This often means mallicious intent as tables are supposed to be public. Do you wish to execute this lua code anyhow?'), mtWarning, mbYes,  mbNo, mbYesToAll, mbNoToAll)
+              if r==mrYes then
+                decodeIt=true
+              elseif r==mrYesToAll then
+                decodeIt=true
+                yesToAll=true
+              elseif r==mrNoToAll then
+                decodeIt=false
+                noToAll=true
+              end              
+            end
+            if decodeIt==false then 
+              return function() return nil end --dummy function
+            else 
+              return originalDecode(data)
+            end            
+          end
+          ceshare.decodeFunctionHooked=true
         end
         
         loadTable(cheattabless)        
@@ -270,15 +337,13 @@ function ceshare.CheckForCheatsClick(s)
     ceshare.picEmptyStar=ceshare.CheatBrowserFrm.imgStarNotFilled.Picture
   
     ceshare.RateStars={}
-    local dim=ceshare.CheatBrowserFrm.btnAddViewComments.Height+2
+    
     local currentLeftControl=ceshare.CheatBrowserFrm.lblRate
     local i
     for i=1,5 do
       ceshare.RateStars[i]={}
       ceshare.RateStars[i].state=false
       ceshare.RateStars[i].img=createImage(ceshare.CheatBrowserFrm.pnlControls)
-      ceshare.RateStars[i].img.Width=dim
-      ceshare.RateStars[i].img.Height=dim      
       ceshare.RateStars[i].img.Stretch=true
       ceshare.RateStars[i].img.Picture=ceshare.picEmptyStar
       ceshare.RateStars[i].img.AnchorSideLeft.Control=currentLeftControl
@@ -339,6 +404,95 @@ function ceshare.CheckForCheatsClick(s)
         end        
       end
       
+      ceshare.CheatBrowserFrm.lblContact.OnClick=function(l)
+        --clicked on the Contact link bitton right
+        local index=ceshare.CheatBrowserFrm.lvCheats.ItemIndex  
+        if index~=-1 then
+          local cheatid=ceshare.CurrentQuery[index+1].ID  
+          local parameters='id='..cheatid
+          if ceshare.CurrentQuery[index+1].Public==false then
+            --ask if the owner of the table or admin should be contacted
+            local f=createForm(false)
+            f.Caption=translate('Contact')
+            local l=createLabel(f)
+            l.Caption=translate('Contact who?')
+            l.Align=alTop
+            l.Alignment='taCenter'
+
+            local buttonPanel=createPanel(f)
+            buttonPanel.BevelOuter='bvNone'
+            buttonPanel.Align='alClient'
+            buttonPanel.ChildSizing.Layout='cclLeftToRightThenTopToBottom'
+            buttonPanel.ChildSizing.ControlsPerLine=2
+            buttonPanel.ChildSizing.HorizontalSpacing=(getScreenDPI()/96)*3
+            buttonPanel.BorderSpacing.Around=(getScreenDPI()/96)*3
+
+
+
+            local btnAdmin=createButton(buttonPanel)
+            btnAdmin.Caption=translate('Site Admin')
+            btnAdmin.ModalResult=1000
+            local btnOwner=createButton(buttonPanel)
+            btnOwner.Caption=translate('Table Owner')
+            btnOwner.ModalResult=1001
+
+            btnAdmin.AutoSize=true
+            btnOwner.AutoSize=true
+
+            buttonPanel.AutoSize=true
+            f.AutoSize=true
+
+            f.BorderIcons="[biSystemMenu]"
+            f.Position="poScreenCenter"
+
+            local r=f.showModal()
+            if r>=1000 then
+              if r==1000 then --admin
+                parameters=parameters..'&admin=1' 
+              end
+            else
+              return
+            end
+
+          end 
+
+          xml=ceshare.QueryXURL('Contact.php',parameters)
+          if xml then
+            --just a cache so the database doesn't have to be asked and shows even when  not logged in
+            if xml.Url then
+              local url=xml.Url:value()
+              --[[
+              validate the result.
+              allowed: 
+                mailto:
+                http:
+                https:              
+              --]]
+              
+              local valid=false
+              start,stop=string.find(url, "https:")
+              if start==1 then valid=true end
+              
+              if not valid then
+                start,stop=string.find(url, "http:")
+                if start==1 then valid=true end
+              end
+              
+              if not valid then
+                start,stop=string.find(url, "mailto:")
+                if start==1 then valid=true end
+              end
+              
+              if valid then
+                shellExecute(url)
+              end
+            end
+          end
+          
+          
+        end
+      end
+      
       currentLeftControl=ceshare.RateStars[i].img
     end
     local RateStars={}
@@ -367,6 +521,7 @@ function ceshare.CheckForCheatsClick(s)
     ceshare.CheatBrowserFrm.miDeleteTable.OnClick=function(s)
       local index=ceshare.CheatBrowserFrm.lvCheats.ItemIndex
       if index~=-1 then
+        local entry=ceshare.CurrentQuery[index+1]
         ceshare.Delete(entry)
       end    
     end    
@@ -390,7 +545,7 @@ function ceshare.CheckForCheatsClick(s)
       if index~=-1 then
         ceshare.CheatBrowserFrm.miLoad.Visible=true
         ceshare.CheatBrowserFrm.miViewComments.Visible=true
-        ceshare.CheatBrowserFrm.miViewHistory.Visible=false --to be implemented later true
+        ceshare.CheatBrowserFrm.miViewHistory.Visible=false --to be implemented later
         ceshare.CheatBrowserFrm.sep.Visible=true
         
         local entry=ceshare.CurrentQuery[index+1]
@@ -422,14 +577,34 @@ function ceshare.CheckForCheatsClick(s)
       
     end
     
+    ceshare.linkButton=createPNG()
+    ceshare.linkButton.LoadFromFile(ceshare.imagepath..'link.png')
+    
+    local formdata
+    ceshare.CheatBrowserFrm.loadedFormPosition, formdata=ceshare.CheatBrowserFrm.loadFormPosition()
+    if ceshare.CheatBrowserFrm.loadedFormPosition then
+      if #formdata>=1 then    
+        ceshare.CheatBrowserFrm.CEPanel1.Height=formdata[1]   
+      end
+    else    
+      ceshare.CheatBrowserFrm.Position='poScreenCenter'
+      ceshare.CheatBrowserFrm.CEPanel1.Height=(getScreenDPI()/96)*100
+    end
+  
   end
 
   --get the table list
   ceshare.CheatBrowserFrm.lvCheats.clear()
-  ceshare.CurrentQuery=ceshare.QueryCurrentProcess()
+  
+  if overrideProcess==nil then
+    ceshare.CurrentQuery=ceshare.QueryCurrentProcess()
+  else  
+    local headermd5=ceshare.getCurrentProcessHeaderMD5() or '00000000000000000000000000000000'         
+    ceshare.CurrentQuery=ceshare.QueryProcessCheats(overrideProcess, headermd5)
+  end
 
   if ceshare.CurrentQuery==nil or #ceshare.CurrentQuery==0 then
-    messageDialog('Sorry, but there are currently no tables for this target. Perhaps you can be the first',mtError,mbOK)
+    messageDialog(translate('Sorry, but there are currently no tables for this target. Perhaps you can be the first'),mtError,mbOK)
     return
   end
 
@@ -478,6 +653,8 @@ function ceshare.CheckForCheatsClick(s)
       ceshare.CheatBrowserFrm.lvCheats.ItemIndex=i-1
       --select
     end
+    
+    li.SubItems.add(' ') --url
 
   end
   
@@ -489,6 +666,13 @@ function ceshare.CheckForCheatsClick(s)
   ceshare.CheatBrowserFrm.lvCheats.Constraints.MinHeight=0
   ceshare.CheatBrowserFrm.pnlDescription.Constraints.MinHeight=0
   
+  --adjust starsize
+  local dim=ceshare.CheatBrowserFrm.btnAddViewComments.Height
+  for i=1,5 do  
+    ceshare.RateStars[i].img.Width=dim
+    ceshare.RateStars[i].img.Height=dim
+  end
+  
   if not ceshare.CheatBrowserFrmShownBefore then
     --adjust the size
     local headerwidth=0
@@ -499,17 +683,23 @@ function ceshare.CheckForCheatsClick(s)
       
       if w<neededw then
         ceshare.CheatBrowserFrm.lvCheats.Columns[i].Autosize=false
-        ceshare.CheatBrowserFrm.lvCheats.Columns[i].Width=neededw
+        ceshare.CheatBrowserFrm.lvCheats.Columns[i].Width=neededw        
         w=neededw
       end
         
       headerwidth=headerwidth+w    
     end
     
-    ceshare.CheatBrowserFrm.ClientWidth=headerwidth+10
+    
+    
+    if not ceshare.CheatBrowserFrm.loadedFormPosition then
+      ceshare.CheatBrowserFrm.ClientWidth=headerwidth+10      
+    end
+    
+    
     ceshare.CheatBrowserFrmShownBefore=true
   end
 
-  ceshare.CheatBrowserFrm.Position='poScreenCenter'
+
 end
 

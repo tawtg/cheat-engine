@@ -15,7 +15,8 @@ uses
   Dialogs, StdCtrls, Menus, ExtCtrls, SynMemo, SynCompletion, SynEdit, lua,
   lauxlib, lualib, LuaSyntax, luahandler, CEFuncProc, sqldb, strutils,
   InterfaceBase, ComCtrls, SynGutterBase, SynEditMarks, PopupNotifier, ActnList,
-  SynEditHighlighter, AvgLvlTree, math, LazFileUtils, Types, LCLType, pluginexports;
+  SynEditHighlighter, AvgLvlTree, math, LazFileUtils, Types, LCLType,
+  pluginexports, SynEditKeyCmds;
 
 type
 
@@ -72,7 +73,6 @@ type
     tbRun: TToolButton;
     tbSingleStep: TToolButton;
     procedure btnExecuteClick(Sender: TObject);
-    procedure Button1Click(Sender: TObject);
     procedure cbShowOnPrintClick(Sender: TObject);
     procedure dlgReplaceFind(Sender: TObject);
     procedure dlgReplaceReplace(Sender: TObject);
@@ -123,6 +123,8 @@ type
     procedure tShowHintTimer(Sender: TObject);
   private
     { private declarations }
+    CompleterInvokedByDot: boolean;
+    loadedFormPosition: boolean;
     hintwindow:THintWindow;
     continuemethod: integer;
     AutoCompleteStartLine: string;
@@ -260,15 +262,14 @@ begin
     exit('_G');
   end;
 
-  extra:=copy(r,i+1,length(r)-i-1);
+  extra:=copy(r,i+1);
   exit(copy(r,1,i-1));
-
 
 end;
 
 procedure TfrmLuaEngine.scLuaCompleterExecute(Sender: TObject);
 var
-  s,extra: string;
+  s,s2,extra: string;
   w: tpoint;
   i,j,si: integer;
   start: integer;
@@ -287,6 +288,7 @@ var
 
   f: boolean;
 begin
+
   scLuaCompleter.ItemList.Clear;
 
   L:=luavm;
@@ -294,9 +296,19 @@ begin
 
   //parse the symbol the cursor is at
   s:=mscript.LineText;
-  s:=copy(s,1,mscript.CaretX-1);
+  if CompleterInvokedByDot then
+  begin
+    Insert('.',s,mscript.CaretX);
+    s:=copy(s,1,mscript.CaretX);
+  end
+  else
+    s:=copy(s,1,mscript.CaretX-1);
+
+  CompleterInvokedByDot:=false;
+
 
   s:=ParseStringForPath(s,extra);
+
 
   try
     if luaL_loadstring(L,pchar('return '+s))=0 then
@@ -390,11 +402,25 @@ begin
                 if lua_type(L,-2)=LUA_TSTRING then
                 begin
                   s:=Lua_ToString(L,-2);
-                  if s='math' then
-                  asm
-                  nop
+
+                  if lua_isfunction(L,-1) then
+                  begin
+                    if lua_iscfunction(L,-1) then  //should be the case, but some people don't use the designated functions
+                    begin
+                      s2:=s;
+                      s2[1]:=lowercase(s2[1]);
+                      if s2[1]<>s[1] then
+                      begin
+                        //check if it does have a duplicate
+                        lua_pushstring(L,s2);
+                        lua_gettable(L,i);
+                        if lua_isnil(L,-1)=false then //has duplicate
+                          s[1]:=lowercase(s[1]);
+
+                        lua_pop(L,1);
+                      end;
+                    end;
                   end;
-                  if lua_isfunction(L,-1) then s[1]:=lowercase(s[1]);
 
                   properties.Add(s);
                 end;
@@ -422,6 +448,8 @@ begin
         lua_pop(L,i);
       end;
     end;
+
+    scLuaCompleter.CurrentString:=extra;
   except
     on e:exception do
       messagedlg(e.message,mtError,[mbok],0);
@@ -446,8 +474,10 @@ var
 begin
   //get the text from the end till the first .
 
-  s:=scLuaCompleter.CurrentString;
+  s:=uppercase(scLuaCompleter.CurrentString);
 
+  if scLuaCompleter.ItemList.count=0 then
+    exit;
 
 
   if s='' then exit;
@@ -459,6 +489,7 @@ begin
 
   //outputdebugstring(pchar(s));
 
+
   for i:=0 to scLuaCompleter.ItemList.count-1 do
   begin
     s2:=uppercase(scLuaCompleter.ItemList[i]);
@@ -466,14 +497,14 @@ begin
     p:=pos(s,s2);
     if p=1 then
     begin
+      scLuaCompleter.Position:=i-1;
+
       APosition:=i;
       exit;
     end;
   end;
 
-  APosition:=-1;
- // APosition:=scLuaCompleter.ItemList.IndexOf(s);
-
+  aposition:=-1;
 end;
 
 procedure TfrmLuaEngine.SQLConnector1AfterConnect(Sender: TObject);
@@ -1279,11 +1310,7 @@ begin
   mScript.SetFocus;
 end;
 
-procedure TfrmLuaEngine.Button1Click(Sender: TObject);
-begin
 
-
-end;
 
 procedure TfrmLuaEngine.cbShowOnPrintClick(Sender: TObject);
 begin
@@ -1357,6 +1384,7 @@ procedure TfrmLuaEngine.FormCreate(Sender: TObject);
 var
   x: array of integer;
   fq: TFontQuality;
+  i: integer;
 begin
 
   synhighlighter:=TSynLuaSyn.Create(self);
@@ -1372,6 +1400,7 @@ begin
   setlength(x,1);
   if LoadFormPosition(self, x) then
   begin
+    loadedFormPosition:=true;
     panel1.height:=x[0];
     if length(x)>1 then
     begin
@@ -1385,6 +1414,7 @@ begin
         miAutoComplete.checked:=x[3]=1;
     end;
   end;
+
   {$ifdef darwin}
   miCut.ShortCut:=TextToShortCut('Meta+X');
   miCopy.ShortCut:=TextToShortCut('Meta+C');
@@ -1392,7 +1422,14 @@ begin
   miUndo.ShortCut:=TextToShortCut('Meta+Z');
   miRedo.ShortCut:=TextToShortCut('Shift+Meta+X');
   miFind.ShortCut:=TextToShortCut('Meta+F');
-  miCut.ShortCut:=TextToShortCut('Meta+X');
+
+  i:=mScript.Keystrokes.FindCommand(ecSelectAll);
+  if i<>-1 then mScript.Keystrokes[i].ShortCut:=TextToShortCut('Meta+A');
+
+
+  MenuItem3.ShortCutKey2:=TextToShortCut('Meta+S');
+
+
   {$endif}
 end;
 
@@ -1409,7 +1446,7 @@ begin
 end;
 
 procedure TfrmLuaEngine.FormShow(Sender: TObject);
-var i: integer;
+var i, off: integer;
 begin
   if overridefont<>nil then
     mScript.font.size:=overridefont.size
@@ -1425,6 +1462,22 @@ begin
     dpihelper.AdjustToolbar(tbDebug);
     AdjustImageList(ilSyneditDebug);
     adjustedSize:=true;
+  end;
+
+  if loadedFormPosition=false then
+  begin
+    i:=mscript.CharWidth*40+mscript.Gutter.Width+panel3.width;
+    if mscript.width<i then clientwidth:=clientwidth+(i-mscript.width);
+
+    i:=mscript.LineHeight*6;
+    off:=(i-mscript.height);
+    if mscript.height<i then panel1.height:=panel1.height+off;
+
+    clientheight:=clientheight+off;
+
+    i:=canvas.TextHeight('XXX')*10;
+    if moutput.height<i then
+      clientheight:=clientheight+(i-moutput.height);
   end;
 
 end;
@@ -1650,13 +1703,29 @@ begin
     if key='.' then
     begin
       {$ifdef windows} //perhaps fixed in laz 2.0.6 which I use for mac , or just a cocoa thing where the char is inserted first
-      mscript.InsertTextAtCaret('.');
+      //mscript.InsertTextAtCaret('.');
+
+
+
+
+
+
       {$endif}
       p:=mscript.RowColumnToPixels(point(mscript.CaretX,mscript.CaretY+1));
       p2:=mscript.ClientToScreen(point(0,0));
+
+
+
+      scLuaCompleter.Editor:=mscript;
+
+
+      CompleterInvokedByDot:=true;
+
       scLuaCompleter.Execute('.',p2+p);
 
-      key:=#0;
+      if (scLuaCompleter.TheForm<>nil) and scLuaCompleter.TheForm.CanFocus then
+        scLuaCompleter.TheForm.SetFocus;
+
     end;
   end;
 end;

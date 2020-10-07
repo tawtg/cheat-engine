@@ -8,7 +8,7 @@ interface
 
 uses
      {$ifdef darwin}
-     macport,
+     macport, macexceptiondebuggerinterface,
      {$endif}
      {$ifdef windows}
      windows,
@@ -18,10 +18,10 @@ uses
      memscan,plugin, hotkeyhandler,frmProcessWatcherUnit, newkernelhandler,
      debuggertypedefinitions, commonTypeDefs;
 
-const ceversion=7.1;
+const ceversion=7.2;
 
 resourcestring
-  cename = 'Cheat Engine 7.1';
+  cename = 'Cheat Engine 7.2';
   rsPleaseWait = 'Please Wait!';
 
 procedure UpdateToolsMenu;
@@ -31,7 +31,7 @@ procedure initcetitle;
 
 
 
-const beta=' alpha'; //empty this for a release
+const beta=' Beta 2'; //empty this for a release
 
 var
   CEnorm:string;
@@ -82,6 +82,7 @@ resourcestring
   rsEnableDisableSpeedhack = 'Enable/Disable speedhack.';
   rsM2NoHotkey = ' (No hotkey)';
   rsWontHaveAnyEffectUntilYouOpenANewProcess = '(Won''t have any effect until you (re)open a process)';
+  rsDBVMMissedEntries = 'Missed %d entries due to a too small buffer or slow copy operation';
 
 
   var
@@ -699,15 +700,8 @@ begin
             cbProcessIcons.Checked:=reg.ReadBool('Get process icons');
           GetProcessIcons:=cbProcessIcons.Checked;
 
-
-          if reg.ValueExists('Only show processes with icon') then
-            cbProcessIconsOnly.checked:=reg.ReadBool('Only show processes with icon');
-
           if reg.ValueExists('Pointer appending') then
             cbOldPointerAddMethod.checked:=reg.ReadBool('Pointer appending');
-
-          cbProcessIconsOnly.Enabled:=cbProcessIcons.Checked;
-          ProcessesWithIconsOnly:=cbProcessIconsOnly.Checked;
 
 
           if reg.ValueExists('skip PAGE_NOCACHE') then
@@ -807,6 +801,7 @@ begin
           if reg.ValueExists('Use Processwatcher') then
             cbProcessWatcher.checked:=reg.readBool('Use Processwatcher');
 
+          {$ifdef windows}
           if reg.ValueExists('Use VEH Debugger') then
             cbUseVEHDebugger.Checked:=reg.ReadBool('Use VEH Debugger');
 
@@ -821,10 +816,20 @@ begin
 
           if reg.ValueExists('Use Kernel Debugger') then
             cbKdebug.checked:=reg.ReadBool('Use Kernel Debugger');
+          {$endif}
 
           if reg.ValueExists('Wait After Gui Update') then
             waitafterguiupdate:=reg.ReadBool('Wait After Gui Update');
           cbWaitAfterGuiUpdate.checked:=waitafterguiupdate;
+
+          {$ifdef darwin}
+          cbUseMacDebugger.checked:=true;
+
+          if reg.ValueExists('Use TaskLevel debugger') then
+            useTaskLevelDebug:=reg.ReadBool('Use TaskLevel debugger');
+
+          {$endif}
+
 
           if reg.ValueExists('Unexpected Breakpoint Behaviour') then
           begin
@@ -886,6 +891,11 @@ begin
             cbNeverChangeProtection.checked:=reg.ReadBool('Never Change Protection');
 
           SkipVirtualProtectEx:=cbNeverChangeProtection.checked;
+
+          if reg.ValueExists('Always Force Load') then
+            cbAlwaysForceLoad.checked:=reg.ReadBool('Always Force Load');
+
+          alwaysforceload:=cbAlwaysForceLoad.checked;
 
 
           if reg.ValueExists('Show Language MenuItem') then

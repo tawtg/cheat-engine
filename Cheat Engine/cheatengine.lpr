@@ -14,7 +14,7 @@ uses
   {$ifdef darwin}
   //
   macport, macportdefines,coresymbolication, macexceptiondebuggerinterface,
-  macCreateRemoteThread,
+  macCreateRemoteThread, macumm, machotkeys, macPipe,
   {$endif}
   controls, sysutils, Forms, LazUTF8, dialogs, SynCompletion, MainUnit,
   CEDebugger, NewKernelHandler, CEFuncProc, ProcessHandlerUnit, symbolhandler,
@@ -112,7 +112,8 @@ uses
   textrender, diagramtypes, diagramblock, diagram, LuaDiagram, LuaDiagramBlock,
   LuaDiagramLink, diagramlink, BreakpointTypeDef, frmFoundlistPreferencesUnit,
   LuaHeaderSections, frmDebuggerAttachTimeoutUnit, cheatecoins,
-  frmMicrotransactionsUnit, frmSyntaxHighlighterEditor, LuaCustomImageList;
+  frmMicrotransactionsUnit, frmSyntaxHighlighterEditor, LuaCustomImageList,
+  dotnethost, rttihelper, cefreetype, LuaDotNetPipe, LuaRemoteExecutor;
 
 {$R cheatengine.res}
 {$IFDEF windows}
@@ -237,7 +238,11 @@ begin
       break;
     end;
 
+{$ifdef darwin}
+  frmmacumm.visible:=true;
+{$else}
   mainform.visible:=mainformvisible;
+{$endif}
 end;
 
 type TFormFucker=class
@@ -266,7 +271,7 @@ var
   path: string;
   noautorun: boolean;
 begin
-  Application.Title:='Cheat Engine 7.1';
+  Application.Title:='Cheat Engine 7.2';
   {$ifdef darwin}
   macPortFixRegPath;
   {$endif}
@@ -358,6 +363,9 @@ begin
   Application.CreateForm(TAdvancedOptions, AdvancedOptions);
   Application.CreateForm(TComments, Comments);
   Application.CreateForm(TTypeForm, TypeForm);
+  {$ifdef darwin}
+  Application.CreateForm(TfrmMacUmm, frmMacUmm);
+  {$endif}
 
   initcetitle;
   {$ifdef darwin}
@@ -369,7 +377,6 @@ begin
   handleparameters;
 
   OutputDebugString('Starting CE');
-
 
 
 

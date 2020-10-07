@@ -47,6 +47,9 @@ type
       procedure LVCustomDrawItemEvent(Sender: TCustomListView; Item: TListItem; State: TCustomDrawState; var DefaultDraw: Boolean);
       procedure LVCustomDrawSubItemEvent(Sender: TCustomListView; Item: TListItem; SubItem: Integer; State: TCustomDrawState; var DefaultDraw: Boolean);
 
+      procedure LVAdvancedCustomDrawEvent(Sender: TCustomListView; const ARect: TRect; Stage: TCustomDrawStage; var DefaultDraw: Boolean);
+      procedure LVAdvancedCustomDrawItemEvent(Sender: TCustomListView; Item: TListItem; State: TCustomDrawState; Stage: TCustomDrawStage; var DefaultDraw: Boolean);
+      procedure LVAdvancedCustomDrawSubItemEvent(Sender: TCustomListView; Item: TListItem; SubItem: Integer; State: TCustomDrawState; Stage: TCustomDrawStage; var DefaultDraw: Boolean);
 
       procedure CanResizeEvent(Sender: TObject; var NewSize: Integer; var Accept: Boolean);
 
@@ -92,6 +95,8 @@ type
       procedure DBCustomDrawEvent(Sender: TDiagramBlock; const ARect: TRect; beforePaint: boolean; var DefaultDraw: Boolean);
       procedure ContextPopupEvent(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
       procedure TabGetImageEvent(Sender: TObject; TabIndex: Integer; var ImageIndex: Integer);
+      procedure MeasureItemEvent(Control: TWinControl; Index: Integer; var AHeight: Integer);
+      procedure DisassemblerViewOverrideCallback(address: ptruint; var addressstring: string; var bytestring: string; var opcodestring: string; var parameterstring: string; var specialstring: string);
 
       procedure synchronize;
 
@@ -418,9 +423,9 @@ begin
     begin
       PushFunction;
       luaclass_newClass(L, sender);
+      lua_pushinteger(L, integer(closeaction));
 
-
-      if lua_pcall(L, 1,1,0)=0 then //procedure(sender)  lua_pcall returns 0 if success
+      if lua_pcall(L, 2,1,0)=0 then //procedure(sender, closeaction)  lua_pcall returns 0 if success
       begin
         if lua_gettop(L)>0 then
         begin
@@ -871,6 +876,102 @@ begin
     lua_settop(Luavm, oldstack);
   end;
 end;
+
+
+procedure TLuaCaller.LVAdvancedCustomDrawEvent(Sender: TCustomListView; const ARect: TRect; Stage: TCustomDrawStage; var DefaultDraw: Boolean);
+var
+  oldstack: integer;
+  l: Plua_State;
+begin
+  l:=GetLuaState;
+
+  try
+    oldstack:=lua_gettop(l);
+    pushFunction(l);
+    luaclass_newClass(l, sender);
+    lua_pushrect(L,arect);
+    lua_pushinteger(L, integer(Stage));
+    lua_pushboolean(L,DefaultDraw);
+
+    if lua_pcall(l, 4, 1, 0)=0 then
+      DefaultDraw:=lua_toboolean(l,-1);
+  finally
+    lua_settop(l, oldstack);
+  end;
+end;
+
+procedure TLuaCaller.LVAdvancedCustomDrawItemEvent(Sender: TCustomListView; Item: TListItem; State: TCustomDrawState; Stage: TCustomDrawStage; var DefaultDraw: Boolean);
+var
+  oldstack: integer;
+  l: Plua_State;
+  i: integer;
+begin
+  l:=GetLuaState;
+
+  try
+    oldstack:=lua_gettop(l);
+    pushFunction(l);
+    luaclass_newClass(l, sender);
+    luaclass_newClass(l, Item);
+    lua_newtable(L);
+
+    for i:=0 to 8 do
+      if TCustomDrawStateFlag(i) in state then
+      begin
+        lua_pushinteger(L,i);
+        lua_pushboolean(L,true);
+        lua_settable(L,-3);
+      end;
+
+
+    lua_pushinteger(L, integer(stage));
+
+    lua_pushboolean(L,DefaultDraw);
+
+    if lua_pcall(l, 5, 1, 0)=0 then
+      DefaultDraw:=lua_toboolean(l,-1);
+  finally
+    lua_settop(l, oldstack);
+  end;
+end;
+
+procedure TLuaCaller.LVAdvancedCustomDrawSubItemEvent(Sender: TCustomListView; Item: TListItem; SubItem: Integer; State: TCustomDrawState; Stage: TCustomDrawStage; var DefaultDraw: Boolean);
+var
+  oldstack: integer;
+  l: Plua_State;
+  i: integer;
+begin
+  l:=GetLuaState;
+
+  try
+    oldstack:=lua_gettop(l);
+    pushFunction(l);
+    luaclass_newClass(l, sender);
+    luaclass_newClass(l, Item);
+    lua_pushinteger(L,SubItem);
+    lua_newtable(L);
+
+    for i:=0 to 8 do
+      if TCustomDrawStateFlag(i) in state then
+      begin
+        lua_pushinteger(L,i);
+        lua_pushboolean(L,true);
+        lua_settable(L,-3);
+      end;
+
+    lua_pushinteger(L, integer(stage));
+
+    lua_pushboolean(L,DefaultDraw);
+
+    if lua_pcall(l, 6, 1, 0)=0 then
+      DefaultDraw:=lua_toboolean(l,-1);
+  finally
+    lua_settop(l, oldstack);
+  end;
+end;
+
+
+
 
 procedure TLuaCaller.LVCustomDrawEvent(Sender: TCustomListView; const ARect: TRect;  var DefaultDraw: Boolean);
 var
@@ -1572,6 +1673,50 @@ begin
   end;
 end;
 
+procedure TLuaCaller.MeasureItemEvent(Control: TWinControl; Index: Integer; var AHeight: Integer);
+var
+  oldstack: integer;
+begin
+  oldstack:=lua_gettop(Luavm);
+  try
+    pushFunction;
+    luaclass_newClass(LuaVM, control);
+    lua_pushinteger(LuaVM, index);
+    lua_pushinteger(LuaVM, AHeight);
+    lua_pcall(LuaVM, 3,1,0);
+    if not lua_isnil(LuaVM,-1) then
+      AHeight:=lua_tointeger(LuaVM,-1);
+  finally
+    lua_settop(LuaVM, oldstack);
+  end;
+end;
+
+procedure TLuaCaller.DisassemblerViewOverrideCallback(address: ptruint; var addressstring: string; var bytestring: string; var opcodestring: string; var parameterstring: string; var specialstring: string);
+var
+  oldstack: integer;
+begin
+  oldstack:=lua_gettop(Luavm);
+  try
+    pushFunction;
+    lua_pushinteger(LuaVM, address);
+    lua_pushstring(LuaVM, addressstring);
+    lua_pushstring(LuaVM, bytestring);
+    lua_pushstring(LuaVM, opcodestring);
+    lua_pushstring(LuaVM, parameterstring);
+    lua_pushstring(LuaVM, specialstring);
+
+    lua_pcall(LuaVM, 6,5,0);
+    if not lua_isnil(LuaVM,-5) then addressstring:=Lua_ToString(LuaVM,-5);
+    if not lua_isnil(LuaVM,-4) then bytestring:=Lua_ToString(LuaVM,-4);
+    if not lua_isnil(LuaVM,-3) then opcodestring:=Lua_ToString(LuaVM,-3);
+    if not lua_isnil(LuaVM,-2) then parameterstring:=Lua_ToString(LuaVM,-2);
+    if not lua_isnil(LuaVM,-1) then specialstring:=Lua_ToString(LuaVM,-1);
+  finally
+    lua_settop(LuaVM, oldstack);
+  end;
+end;
+
+
 //----------------------------Lua implementation-----------------------------
 function LuaCaller_NotifyEvent(L: PLua_state): integer; cdecl;
 var
@@ -1632,14 +1777,19 @@ var
 begin
   result:=0;
   parameters:=lua_gettop(L);
-  if parameters=1 then
+  if parameters>=1 then
   begin
     m.code:=lua_touserdata(L, lua_upvalueindex(1));
     m.data:=lua_touserdata(L, lua_upvalueindex(2));
     sender:=lua_toceuserdata(L, 1);
+
+    if parameters>=2 then
+      closeaction:=TCloseAction(lua_tointeger(L,2))
+    else
+      closeaction:=cahide;
+
     lua_pop(L, lua_gettop(L));
 
-    closeaction:=caHide;
     TCloseEvent(m)(sender, closeaction);
 
     lua_pushinteger(L, integer(closeaction));
@@ -1943,6 +2093,142 @@ begin
   else
     lua_pop(L, lua_gettop(L));
 end;
+
+
+function LuaCaller_LVAdvancedCustomDrawEvent(L: PLua_state): integer; cdecl;
+var
+  parameters: integer;
+  m: TMethod;
+  sender: TCustomListView;
+  rect: TRect;
+  stage: TCustomDrawStage;
+  defaultdraw: boolean;
+begin
+  result:=0;
+  parameters:=lua_gettop(L);
+  if parameters>=3 then
+  begin
+    m.code:=lua_touserdata(L, lua_upvalueindex(1));
+    m.data:=lua_touserdata(L, lua_upvalueindex(2));
+    sender:=lua_toceuserdata(L, 1);
+    rect:=lua_torect(L, 2);
+    stage:=TCustomDrawStage(lua_tointeger(L,3));
+
+    if parameters>=4 then
+      defaultdraw:=lua_toboolean(L,4)
+    else
+      defaultdraw:=true;
+    lua_pop(L, lua_gettop(L));
+
+    TLVAdvancedCustomDrawEvent(m)(sender,rect, stage, defaultdraw);
+    lua_pushboolean(L,defaultdraw);
+    result:=1;
+  end
+  else
+    lua_pop(L, lua_gettop(L));
+end;
+
+//TLVAdvancedCustomDrawItemEvent = procedure(Sender: TCustomListView; Item: TListItem; State: TCustomDrawState; Stage: TCustomDrawStage; var DefaultDraw: Boolean) of object;
+//(Sender, Item, State, Stage):DefaultDraw
+function LuaCaller_LVAdvancedCustomDrawItemEvent(L: PLua_state): integer; cdecl;
+var
+  parameters: integer;
+  m: TMethod;
+  sender: TCustomListView;
+  item: TListItem;
+  state: TCustomDrawState;
+  stage: TCustomDrawStage;
+  defaultdraw: boolean;
+  i: integer;
+begin
+  result:=0;
+  parameters:=lua_gettop(L);
+  if parameters>=4 then
+  begin
+    m.code:=lua_touserdata(L, lua_upvalueindex(1));
+    m.data:=lua_touserdata(L, lua_upvalueindex(2));
+    sender:=lua_toceuserdata(L, 1);
+    item:=lua_toceuserdata(L,2);
+    state:=[];
+    if lua_istable(L,3) then
+    begin
+      for i:=0 to 8 do
+      begin
+        lua_pushinteger(L,i);
+        lua_gettable(L,3);
+        if lua_toboolean(L,-1) then
+          state:=state+[TCustomDrawStateFlag(i)];
+      end;
+    end;
+
+    stage:=TCustomDrawStage(lua_tointeger(L,4));
+
+
+    if parameters>=5 then
+      defaultdraw:=lua_toboolean(L,5)
+    else
+      defaultdraw:=true;
+    lua_pop(L, lua_gettop(L));
+
+    TLVCustomDrawItemEvent(m)(sender,item, state, defaultdraw);
+    lua_pushboolean(L,defaultdraw);
+    result:=1;
+  end
+  else
+    lua_pop(L, lua_gettop(L));
+end;
+
+//TLVAdvancedCustomDrawSubItemEvent=procedure(Sender: TCustomListView; Item: TListItem; SubItem: Integer; State: TCustomDrawState; Stage: TCustomDrawStage; var DefaultDraw: Boolean) of object;
+//(Sender, Item, SubItemIndex, State, Stage):DefaultDraw'#13#10'end'#13#10);
+function LuaCaller_LVAdvancedCustomDrawSubItemEvent(L: PLua_state): integer; cdecl;
+var
+  parameters: integer;
+  m: TMethod;
+  sender: TCustomListView;
+  item: TListItem;
+  subitem: integer;
+  state: TCustomDrawState;
+  stage: TCustomDrawStage;
+  defaultdraw: boolean;
+  i: integer;
+begin
+  result:=0;
+  parameters:=lua_gettop(L);
+  if parameters>=5 then
+  begin
+    m.code:=lua_touserdata(L, lua_upvalueindex(1));
+    m.data:=lua_touserdata(L, lua_upvalueindex(2));
+    sender:=lua_toceuserdata(L, 1);
+    item:=lua_toceuserdata(L,2);
+    subitem:=lua_tointeger(L,3);
+    state:=[];
+    if lua_istable(L,4) then
+    begin
+      for i:=0 to 8 do
+      begin
+        lua_pushinteger(L,i);
+        lua_gettable(L,3);
+        if lua_toboolean(L,-1) then
+          state:=state+[TCustomDrawStateFlag(i)];
+      end;
+    end;
+
+    stage:=TCustomDrawStage(lua_tointeger(L,5));
+
+    if parameters>=6 then
+      defaultdraw:=lua_toboolean(L,6)
+    else
+      defaultdraw:=true;
+    lua_pop(L, lua_gettop(L));
+
+    TLVCustomDrawItemEvent(m)(sender,item, state, defaultdraw);
+    lua_pushboolean(L,defaultdraw);
+    result:=1;
+  end
+  else
+    lua_pop(L, lua_gettop(L));
+end;
+
 
 function LuaCaller_LVCustomDrawEvent(L: PLua_state): integer; cdecl;
 var
@@ -2676,6 +2962,65 @@ begin
 end;
 
 
+function LuaCaller_MeasureItemEvent(L: PLua_state): integer; cdecl; //control: TWinControl; Index: Integer; var AHeight: Integer);
+var
+  control: TWinControl;
+  index: integer;
+  height: integer;
+
+  m: TMethod;
+begin
+  result:=0;
+  if lua_gettop(L)=3 then
+  begin
+    m.code:=lua_touserdata(L, lua_upvalueindex(1));
+    m.data:=lua_touserdata(L, lua_upvalueindex(2));
+    control:=lua_ToCEUserData(L, 1);
+    index:=lua_tointeger(L,2);
+    height:=lua_tointeger(L,3);
+    TMeasureItemEvent(m)(control, index, height);
+    lua_pushinteger(L,height);
+    result:=1;
+  end
+  else
+    lua_pop(L, lua_gettop(L));
+end;
+
+function LuaCaller_DisassemblerViewOverrideCallback(L: PLua_state): integer; cdecl; //procedure(address: ptruint; var addressstring: string; var bytestring: string; var opcodestring: string; var parameterstring: string; var specialstring: string);
+var
+  address: ptruint;
+  addressstring: string;
+  bytestring: string;
+  opcodestring: string;
+  parameterstring: string;
+  specialstring: string;
+
+  m: TMethod;
+begin
+  result:=0;
+  if lua_gettop(L)=6 then
+  begin
+    m.code:=lua_touserdata(L, lua_upvalueindex(1));
+    m.data:=lua_touserdata(L, lua_upvalueindex(2));
+    address:=lua_tointeger(L, 1);
+    addressstring:=Lua_ToString(L,2);
+    bytestring:=Lua_ToString(L,3);
+    opcodestring:=Lua_ToString(L,4);
+    parameterstring:=Lua_ToString(L,5);
+    specialstring:=Lua_ToString(L,6);
+    lua_pop(L,6);
+    TDisassemblerViewOverrideCallback(m)(address, addressstring, bytestring, opcodestring, parameterstring, specialstring);
+    lua_pushstring(L, addressstring);
+    lua_pushstring(L, bytestring);
+    lua_pushstring(L, opcodestring);
+    lua_pushstring(L, parameterstring);
+    lua_pushstring(L, specialstring);
+    result:=5;
+  end
+  else
+    lua_pop(L, lua_gettop(L));
+end;
+
 procedure registerLuaCall(typename: string; getmethodprop: lua_CFunction; setmethodprop: pointer; luafunctionheader: string);
 var t: TLuaCallData;
 begin
@@ -2716,6 +3061,13 @@ initialization
   registerLuaCall('TLVCustomDrawSubItemEvent', LuaCaller_LVCustomDrawSubItemEvent, pointer(TLuaCaller.LVCustomDrawSubItemEvent),'function %s(Sender, Item, SubItem, State)'#13#10#13#10'  return true --return true for DefaultDraw'#13#10'end'#13#10);
 
 
+  //TLVAdvancedCustomDrawEvent = procedure(Sender: TCustomListView; const ARect: TRect; Stage: TCustomDrawStage; var DefaultDraw: Boolean) of object;
+  registerLuaCall('TLVAdvancedCustomDrawEvent', LuaCaller_LVAdvancedCustomDrawEvent, pointer(TLuaCaller.LVAdvancedCustomDrawEvent),'function %s(Sender, Rect, Stage)'#13#10#13#10'  return true --returen true for DefaultDraw'#13#10'end'#13#10);
+  //TLVAdvancedCustomDrawItemEvent = procedure(Sender: TCustomListView; Item: TListItem; State: TCustomDrawState; Stage: TCustomDrawStage; var DefaultDraw: Boolean) of object;
+  registerLuaCall('TLVAdvancedCustomDrawItemEvent', LuaCaller_LVAdvancedCustomDrawItemEvent, pointer(TLuaCaller.LVAdvancedCustomDrawItemEvent),'function %s(Sender, Item, State, Stage)'#13#10#13#10'  return true --returen true for DefaultDraw'#13#10'end'#13#10);
+  //TLVAdvancedCustomDrawSubItemEvent=procedure(Sender: TCustomListView; Item: TListItem; SubItem: Integer; State: TCustomDrawState; Stage: TCustomDrawStage; var DefaultDraw: Boolean) of object;
+  registerLuaCall('TLVAdvancedCustomDrawSubItemEvent', LuaCaller_LVAdvancedCustomDrawSubItemEvent, pointer(TLuaCaller.LVAdvancedCustomDrawSubItemEvent),'function %s(Sender, Item, SubItemIndex, State, Stage)'#13#10#13#10'  return true --returen true for DefaultDraw'#13#10'end'#13#10);
+
 
 
   registerLuaCall('TMemoryRecordActivateEvent', LuaCaller_MemoryRecordActivateEvent, pointer(TLuaCaller.MemoryRecordActivateEvent),'function %s(sender, before, current)'#13#10#13#10'end'#13#10);
@@ -2743,6 +3095,8 @@ initialization
   registerLuaCall('TDBCustomDrawEvent', LuaCaller_DBCustomDrawEvent, pointer(TLuaCaller.DBCustomDrawEvent),'function %s(sender, rect, beforedraw)'#13#10#13#10'  return text'#13#10'end'#13#10);
   registerLuaCall('TContextPopupEvent', LuaCaller_ContextPopupEvent, pointer(TLuaCaller.ContextPopupEvent),'function %s(sender, mousepos)'#13#10'  local handled=true'#13#10'  return handled'#13#10'end'#13#10);
   registerLuaCall('TTabGetImageEvent', LuaCaller_TabGetImageEvent, pointer(TLuaCaller.TabGetImageEvent),'function %s(sender, tabindex)'#13#10'  local imageindex=-1'#13#10'  return imageindex'#13#10'end'#13#10);
+  registerLuaCall('TMeasureItemEvent', LuaCaller_MeasureItemEvent, pointer(TLuaCaller.MeasureItemEvent),'function %s(sender, index, height)'#13#10'  return height'#13#10'end'#13#10);
 
+  registerLuaCall('TDisassemblerViewOverrideCallback', LuaCaller_DisassemblerViewOverrideCallback, pointer(TLuaCaller.DisassemblerViewOverrideCallback),'function %s(address, addressstring, bytestring, opcodestring, parameterstring, specialstring)'#13#10'  return addressstring, bytestring, opcodestring, parameterstring, specialstring'#13#10'end'#13#10);
 end.
 

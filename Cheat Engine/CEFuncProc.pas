@@ -9,7 +9,7 @@ interface
 
 uses
   {$ifdef darwin}
-  macport, macportdefines, mactypes, LCLType,
+   mactypes, LCLType,macport,
   {$endif}
   {$ifdef windows}
    jwawindows, windows,
@@ -35,7 +35,7 @@ hypermode,
 {$endif}
 {$endif}
  math,syncobjs, {$ifdef windows}shellapi,{$endif} ProcessHandlerUnit, controls, {$ifdef windows}shlobj, ActiveX,{$endif} strutils,
-commontypedefs, {$ifdef windows}Win32Int,{$endif} maps, lua, lualib, lauxlib;
+commontypedefs, {$ifdef windows}Win32Int,{$endif} maps, lua, lualib, lauxlib{$ifdef darwin},macportdefines{$endif};
 
 
 const
@@ -205,7 +205,7 @@ const
   splitvalue=400000;
   number=600;      //is my using the new value on my system arround 580000
 
-  WM_HOTKEY2=$8000;
+
 
   PAGE_WRITECOMBINE=$400;
 
@@ -354,7 +354,7 @@ uses disassembler,CEDebugger,debughelper, symbolhandler, symbolhandlerstructs,
      frmProcessWatcherUnit, KernelDebugger, formsettingsunit, MemoryBrowserFormUnit,
      savedscanhandler, networkInterface, networkInterfaceApi, vartypestrings,
      processlist, Parsers, Globals, xinput, luahandler, LuaClass, LuaObject,
-     UnexpectedExceptionsHelper, LazFileUtils, autoassembler;
+     UnexpectedExceptionsHelper, LazFileUtils, autoassembler, Clipbrd;
 
 
 resourcestring
@@ -587,8 +587,8 @@ begin
 
         VK_OEM_PLUS : newstr:='=';
         VK_OEM_MINUS : newstr:='-';
-        VK_OEM_PERIOD : newstr:=',';
-        VK_OEM_COMMA : newstr:='.';
+        VK_OEM_PERIOD : newstr:='.';
+        VK_OEM_COMMA : newstr:=',';
         VK_OEM_1 : newstr:=';';
         VK_OEM_2 : newstr:='/';
         VK_OEM_3 : newstr:='`';
@@ -748,7 +748,10 @@ begin
   try
     lua_getglobal(Luavm, 'loadModule');
     lua_pushstring(Luavm,dllname);
-    if (lua_pcall(Luavm,1,2,0)<>0) then
+    lua_pushboolean(LuaVM,true);
+    lua_pushinteger(LuaVM,10000); //timeout of 10 secs
+
+    if (lua_pcall(Luavm,3,2,0)<>0) then
       raise exception.create('didn''t even run');
 
     if lua_isnil(Luavm,-2) then
@@ -798,6 +801,7 @@ var s: tstringlist;
     tid: dword;
     el: TCEExceptionListArray;
 begin
+  outputdebugstring('cefuncproc.InjectDLL('''+dllname+''','''+functiontocall+''')');
   s:=tstringlist.create;
   s.add('[enable]');
   s.add('registersymbol(v1)');
@@ -925,6 +929,8 @@ begin
 
   //clipboard.AsText:=s.Text;
 
+ // raise exception.create('copy to clipboard now');
+
 
   setlength(allocs,0);
   if autoassemble(s,false, true, false, false, allocs,el) then
@@ -968,7 +974,7 @@ begin
 
     end;
 
-    outputdebugstring('dll injection successful');
+    outputdebugstring('library injection code executed successful');
 
 
     //finally free the injector
@@ -995,6 +1001,8 @@ begin
   end else raise exception.create('injecting the dllloader script failed');
 
   s.free;
+
+  outputdebugstring('cefuncproc.InjectDll made it to the end');
 end;
 
 {$endif}
@@ -1471,6 +1479,7 @@ begin
   {$endif}
 end;
 
+var cachedSystemType: integer=-1;
 function GetSystemType: Integer;  //from Stuart Johnson with a little change by me
 const
  { operating system constants }
@@ -1493,6 +1502,9 @@ var
 
 begin
  {$IFDEF windows}
+ if cachedSystemType<>-1 then
+   exit(cachedSystemType);
+
    if overridedebug then
    begin
      result:=cOsWinXP;
@@ -1549,7 +1561,9 @@ begin
   {$else}
 
   result:=cOsUnknown;
+
  {$ENDIF}
+  cachedSystemType:=result;
 end;
 
 
@@ -2122,7 +2136,7 @@ end;
 procedure Open_Process;
 begin
   {$ifndef netclient}
-  ProcessHandler.ProcessHandle:=NewKernelHandler.OpenProcess(PROCESS_ALL_ACCESS,false,ProcessID);
+  ProcessHandler.ProcessHandle:=NewKernelHandler.OpenProcess(ifthen(GetSystemType<=6,$1f0fff, process_all_access) ,false,ProcessID);
   le:=GetLastError;
   {$endif}
 end;
@@ -2460,7 +2474,7 @@ begin
       if processlist.Objects[i]<>nil then
       begin
         ProcessListInfo:=PProcessListInfo(processlist.Objects[i]);
-        if ProcessListInfo.processIcon>0 then
+        if (ProcessListInfo.processIcon<>0) and (ProcessListInfo.processIcon<>HWND(-1)) then
         begin
           if ProcessListInfo^.processID<>GetCurrentProcessId then
             DestroyIcon(ProcessListInfo^.processIcon);
@@ -2511,52 +2525,10 @@ begin
               ProcessListInfo.processID:=winprocess;
               ProcessListInfo.processIcon:=0;
 
-              path:=lowercase(getProcessPathFromProcessID(winprocess));
+              //path:=lowercase(getProcessPathFromProcessID(winprocess));
 
-              ProcessListInfo.issystemprocess:=(ProcessListInfo.processID=4) or (pos(lowercase(windowsdir),path)>0) or (pos('system32',path)>0);
-
-              if formsettings.cbProcessIcons.checked then
-              begin
-                tempptruint:=0;
-
-
-                if SendMessageTimeout(basehandle,WM_GETICON,ICON_BIG,0,SMTO_ABORTIFHUNG, 100, tempptruint )<>0 then
-                begin
-                  ProcessListInfo.processIcon:=tempptruint;
-                  if ProcessListInfo.processIcon=0 then
-                  begin
-                    if SendMessageTimeout(basehandle,WM_GETICON,ICON_SMALL2,0,SMTO_ABORTIFHUNG, 50, tempptruint	)<>0 then
-                      ProcessListInfo.processIcon:=tempptruint;
-
-                    if ProcessListInfo.processIcon=0 then
-                      if SendMessageTimeout(basehandle,WM_GETICON,ICON_SMALL,0,SMTO_ABORTIFHUNG, 25, tempptruint	)<>0 then
-                        ProcessListInfo.processIcon:=tempptruint;
-
-                    if ProcessListInfo.processIcon=0 then
-                    begin
-                      //try the process
-                      HI:=ExtractIcon(hinstance,pchar(path),0);
-                      if HI=0 then
-                      begin
-                        j:=getlasterror;
-
-                        //alternative method:
-
-                        if (winprocess>0) and (uppercase(copy(ExtractFileName(path), 1,3))<>'AVG') then //february 2014: AVG freezes processes that do createtoolhelp32snapshot on it's processes for several seconds. AVG has multiple processes...
-                        begin
-                          s:=GetFirstModuleName(winprocess);
-                          HI:=ExtractIcon(hinstance,pchar(s),0);
-                        end;
-                      end;
-
-                      ProcessListInfo.processIcon:=HI;
-                    end;
-                  end;
-                end else
-                begin
-                  inc(i,100); //at worst case scenario this causes the list to wait 10 seconds
-                end;
-              end;
+              //ProcessListInfo.issystemprocess:=(ProcessListInfo.processID=4) or (pos(lowercase(windowsdir),path)>0) or (pos('system32',path)>0);
+              ProcessListInfo.winhandle:=basehandle;
 
               //before adding check if there is already one with Exactly the same title (e.g: origin)
               found:=false;
@@ -2668,31 +2640,8 @@ begin
         begin
           getmem(ProcessListInfo,sizeof(TProcessListInfo));
           ProcessListInfo.processID:=winprocess;
+          ProcessListInfo.winhandle:=winhandle;
           ProcessListInfo.processIcon:=0;
-          ProcessListInfo.issystemprocess:=false;
-
-          if formsettings.cbProcessIcons.checked then
-          begin
-            tempptruint:=0;
-            if SendMessageTimeout(winhandle,WM_GETICON,ICON_SMALL,0,SMTO_ABORTIFHUNG, 100, tempptruint )<>0 then
-            begin
-              ProcessListInfo.processIcon:=tempptruint;
-              if ProcessListInfo.processIcon=0 then
-              begin
-                if SendMessageTimeout(winhandle,WM_GETICON,ICON_SMALL2,0,SMTO_ABORTIFHUNG, 50, tempptruint	)<>0 then
-                  ProcessListInfo.processIcon:=tempptruint;
-
-                if ProcessListInfo.processIcon=0 then
-                  if SendMessageTimeout(winhandle,WM_GETICON,ICON_BIG,0,SMTO_ABORTIFHUNG, 25, tempptruint	)<>0 then
-                    ProcessListInfo.processIcon:=tempptruint;
-              end;
-            end else
-            begin
-              inc(i,100); //at worst case scenario this causes the list to wait 10 seconds
-            end;
-          end;
-
-
           x.AddObject(IntTohex(winprocess,8)+'-'+wintitle,TObject(ProcessListInfo));
         end;
       end;
@@ -3000,6 +2949,15 @@ begin
   if result=0 then result:=1;
   {$else}
   result:=cpucount;
+
+  if result=1 then
+  begin
+    //doubt!
+  {$ifdef darwin}
+    exit(macport.getCPUCount);
+  {$endif}
+
+  end;
   {$ENDIF}
 end;
 
@@ -3217,6 +3175,8 @@ begin
   dis:=TDisassembler.Create;
   dis.showmodules:=false;
   dis.showsymbols:=false;
+  dis.showsections:=false;
+
   dis.dataOnly:=true;
   try
     dis.disassemble(address,st);
@@ -3494,16 +3454,24 @@ function getProcessPathFromProcessID(pid: dword): string;
 var ths: thandle;
     me32:MODULEENTRY32;
 begin
+  outputdebugstring('getProcessPathFromProcessID('+inttostr(pid)+')');
   result:='';
   me32.dwSize:=sizeof(MODULEENTRY32);
   ths:=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE or TH32CS_SNAPMODULE32,pid);
   if ths<>0 then
   begin
     if Module32First(ths,me32) then
+    begin
+      outputdebugstring('me32.szExePath='+me32.szExePath);
       result:=me32.szExePath;
+    end
+    else
+      OutputDebugString('Module32First failed');
 
     closehandle(ths);
-  end;
+  end
+  else
+    OutputDebugString('CreateToolhelp32Snapshot failed');
 end;
 
 function getProcessnameFromProcessID(pid: dword): string;
@@ -3742,7 +3710,7 @@ begin
   {$IFDEF windows}
   if pid=0 then
     pid:=GetCurrentProcessId;
-  h:=OpenProcess(PROCESS_ALL_ACCESS, false, pid);
+  h:=OpenProcess(ifthen(GetSystemType<=6,$1f0fff, process_all_access), false, pid);
 
   sa.nLength:=sizeof(sa);
   sa.bInheritHandle:=false;
@@ -3762,7 +3730,14 @@ begin
   if (length(trim(tempdiralternative))>2) and dontusetempdir then
     path:=trim(tempdiralternative)
   else
-    path:=GetTempDir;
+  begin
+    path:=trim(GetEnvironmentVariable('_NT_SYMBOL_PATH'));
+    if path='' then
+      path:=trim(GetEnvironmentVariable('_NT_ALTERNATE_SYMBOL_PATH'));
+
+    if path='' then
+      path:=GetTempDir;
+  end;
 
   path:=path+'Cheat Engine Symbols';
 
@@ -3771,7 +3746,7 @@ begin
 
   getmem(shortpath,256);
   GetShortPathName(pchar(path),shortpath,255);
-  symhandler.setsearchpath('srv*'+shortpath+'*https://msdl.microsoft.com/download/symbols');
+  symhandler.setsearchpath('srv*'+path+'*https://msdl.microsoft.com/download/symbols');
   freemem(shortpath);
 
   symhandler.reinitialize(true);
@@ -3799,7 +3774,7 @@ initialization
   end;
 
 
-  ownprocesshandle := OpenProcess(PROCESS_ALL_ACCESS, True, GetCurrentProcessId);
+  ownprocesshandle := OpenProcess(ifthen(GetSystemType<=6,$1f0fff, process_all_access), True, GetCurrentProcessId);
 
 
 

@@ -25,6 +25,10 @@
 #include "exports.h"
 #include "luahandler.h"
 
+#include "displaydebug.h"
+#include "interrupthandler.h"
+
+
 #ifndef DEBUG
 #define sendstringf(s,x...)
 #define sendstring(s)
@@ -634,10 +638,13 @@ void sendvmstate(pcpuinfo currentcpuinfo UNUSED, VMRegisters *registers UNUSED)
 
 #endif
 
-  sendstringf("vm_execution_controls_cpu=%6\n", vmread(vm_execution_controls_cpu));
-  if (vmread(vm_execution_controls_cpu) & SECONDARY_EXECUTION_CONTROLS)
+  if (isAMD==0)
   {
-    sendstringf("vm_execution_controls_cpu_secondary=%6 (unrestricted=%d)\n", vmread(vm_execution_controls_cpu_secondary), (vmread(vm_execution_controls_cpu_secondary) & SPBEF_ENABLE_UNRESTRICTED)!=0);
+    sendstringf("vm_execution_controls_cpu=%6\n", vmread(vm_execution_controls_cpu));
+    if (vmread(vm_execution_controls_cpu) & SECONDARY_EXECUTION_CONTROLS)
+    {
+      sendstringf("vm_execution_controls_cpu_secondary=%6 (unrestricted=%d)\n", vmread(vm_execution_controls_cpu_secondary), (vmread(vm_execution_controls_cpu_secondary) & SPBEF_ENABLE_UNRESTRICTED)!=0);
+    }
   }
 
 
@@ -669,12 +676,21 @@ int vmexit_amd(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave UNUSED)
 
   nosendchar[getAPICID()]=1;
 
+  if (readMSR(IA32_FS_BASE_MSR)==0)
+  {
+    nosendchar[getAPICID()]=0;
+    sendstringf("Invalid FS base during exception (currentcpuinfo=%6 vmeventcount=%d)\n", currentcpuinfo, vmeventcount);
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+    while (1) outportb(0x80,0xc5);
+  }
+  vmeventcount++;
+
 
 #ifdef DEBUG
   csEnter(&vmexitlock);
 
 
-  sendstringf("vmexit_amd for cpu %d\n", currentcpuinfo->cpunr);
+  //sendstringf("vmexit_amd for cpu %d\n", currentcpuinfo->cpunr);
 
 #endif
 
@@ -685,7 +701,9 @@ int vmexit_amd(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave UNUSED)
       return 0;
   }
 
-  result=handleVMEvent_amd(currentcpuinfo, (VMRegisters*)registers);
+  result=handleVMEvent_amd(currentcpuinfo, (VMRegisters*)registers, fxsave);
+
+
 
   if (dbvm_plugin_exit_post)
     dbvm_plugin_exit_post(exportlist, currentcpuinfo, registers, fxsave, &result);
@@ -760,6 +778,7 @@ int vmexit2(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 #else
 
 
+int showlife=0;
 
 int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 #endif
@@ -770,9 +789,19 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
   idtvectorinfo.idtvector_info=vmread(vm_idtvector_information);
 
 
+
+
   lastexits[lastexitsindex]=vmread(vm_exit_reason);
   lastexitsindex++;
   lastexitsindex=lastexitsindex % 10;
+
+ // if ((showlife % 2)==0)
+  {
+    ddDrawRectangle(0,DDVerticalResolution-10,10,10,0x0000ff);
+  }
+
+
+
 
 #ifdef CHECKAPICID
   if (currentcpuinfo)
@@ -798,7 +827,10 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
   {
     BOOL r=dbvm_plugin_exit_pre(exportlist, currentcpuinfo, registers, fxsave);
     if (r)
+    {
+      ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
       return 0;
+    }
   }
 
 
@@ -807,7 +839,9 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
     nosendchar[getAPICID()]=0;
     sendstringf("currentcpuinfo==NULL");
 
-    while (1);
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+
+    while (1) outportb(0x80,0xdc);
   }
 
   if (currentcpuinfo->vmxdata.runningvmx)
@@ -817,6 +851,8 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 
     if (dbvm_plugin_exit_post)
       dbvm_plugin_exit_post(exportlist, currentcpuinfo, registers, fxsave, &r);
+
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
 
     return r;
   }
@@ -888,6 +924,8 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 
   if (currentcpuinfo->NMIOccured==2) //nmi occured but no NMI window support
   {
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0x0000ff);
+
     currentcpuinfo->NMIOccured=0;
     return raiseNMI();
   }
@@ -895,8 +933,17 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
   //currentcpuinfo->lastTSCTouch=_rdtsc();
 
 
+  //if ((showlife % 2)==0)
+  {
+    ddDrawRectangle(0,DDVerticalResolution-10,10,10,0x00ff00);
+  }
+
+  showlife++;
+
+
   if ((result!=0) && ((result >> 8) != 0xce)  )//on release, if an unexpected event happens, just fail the instruction and hope the OS won't make a too big mess out of it
   {
+    ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
     while (wait) ; //remove for release
 
     if ((vmread(vm_exit_reason) & 0x7fffffff)==vm_exit_invalid_guest_state) //invalid state
@@ -905,7 +952,15 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
       return raiseInvalidOpcodeException(currentcpuinfo);
   }
   else
+  {
+    if (result)
+    {
+      ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+
+    }
     return result;
+  }
+
 
 #else
   //nosendchar[getAPICID()]=0;
@@ -1259,6 +1314,7 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
       {
         //int cs=vmread(vm_guest_cs);
         //unsigned long long rip=vmread(vm_guest_rip);
+        skip=verbosity; //never
 
 
         break;
@@ -1413,6 +1469,12 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
   //sendstring("|   p: previous event                   |\n\r");
     sendstring("\\---------------------------------------/\n\r");
     sendstring("Your command:");
+
+#ifdef DELAYEDSERIAL
+    if (!useserial)
+      command='1';
+    else
+#endif
     command=waitforchar();
     sendstring("\n\r");
 
@@ -1695,7 +1757,9 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 
       case 'l' :
       {
+#if (defined SERIALPORT) && (SERIALPORT != 0)
         enterLuaConsole();
+#endif
         break;
       }
 
@@ -1715,6 +1779,8 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 
         return 0;
       }
+
+
 
       case  'i' :
       {
@@ -1739,6 +1805,8 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 
       case  's' :
       {
+        vmx_enableSingleStepMode();
+        /*
         UINT64 address;
         unsigned char bt;
         char temps[17];
@@ -1753,6 +1821,7 @@ int vmexit(pcpuinfo currentcpuinfo, UINT64 *registers, void *fxsave)
 
         *(unsigned char *)address=bt;
         sendstring("\n\r");
+        */
         break;
       }
 
@@ -1805,6 +1874,10 @@ void launchVMX(pcpuinfo currentcpuinfo)
     unmapPhysicalMemory(pos, sizeof(OriginalState));
   }
 
+  outportb(0x80,0x01);
+
+
+
   if (isAMD)
     return launchVMX_AMD(currentcpuinfo, originalstate);
 
@@ -1822,10 +1895,14 @@ void launchVMX(pcpuinfo currentcpuinfo)
 
   }
 
+  outportb(0x80,0x02);
+
   if (restorestate)
     result=vmxloop(currentcpuinfo, &originalstate->rax);
   else
     result=vmxloop(currentcpuinfo, NULL);
+
+  outportb(0x80,0xCF);
 
   displayline("VMXLOOP EXIT: APICID=%d\n\r",getAPICID());
   nosendchar[getAPICID()]=0;

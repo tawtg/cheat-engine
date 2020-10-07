@@ -980,7 +980,7 @@ end;  }
 
 implementation
 
-uses luahandler,luacaller, formdesignerunit, CheckLst;
+uses luahandler,luacaller, formdesignerunit, CheckLst, colorbox;
 
 resourcestring
   rsInvalidFormData = 'Invalid formdata';
@@ -1111,7 +1111,7 @@ begin
     CreateGUID(g);
 
     s:=GUIDToString(g);
-    for i:=1 to length(s)-1 do
+    for i:=1 to length(s) do
       if s[i] in ['{','}','-'] then
         s[i]:='_';
 
@@ -1583,6 +1583,7 @@ initialization
   registerclass(TStatusBar);
   registerclass(TCheckListBox);
   registerclass(TColorDialog);
+  registerclass(TColorBox);
 
 
   RegisterPropertyEditor(ClassTypeInfo(TListItems), TCEListView, 'Items', TCEListViewItemsPropertyEditor);

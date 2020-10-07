@@ -17,7 +17,7 @@ uses sysutils,classes, symbolhandler, ProcessHandlerUnit, NewKernelHandler, mems
      commonTypeDefs, parsers, unixporthelper;
 {$else}
 uses {$ifdef darwin}macport,{$endif}
-     sysutils,classes,ComCtrls,StdCtrls,symbolhandler, symbolhandlerstructs, CEFuncProc,
+     sysutils,classes,ComCtrls,StdCtrls, symbolhandlerstructs,
      NewKernelHandler, memscan, CustomTypeHandler, byteinterpreter,
      groupscancommandparser, math, AvgLvlTree, commonTypeDefs, parsers;
 
@@ -121,7 +121,7 @@ type Tscandisplayroutine=procedure(value: pointer; output: pchar);
 implementation
 
 {$ifndef jni}
-uses LCLIntf, mainunit, processhandlerunit;
+uses CEFuncProc, LCLIntf, mainunit, processhandlerunit, symbolhandler;
 {$endif}
 
 
@@ -586,19 +586,24 @@ var j,k,l: integer;
 
     groupdata: PGroupAddress;
 begin
-  if i=qword(-1) then exit;
-
-
-
   extra:=0;
   value:='';
   result:=0;
   groupdata:=nil;
 
+  if i=qword(-1) then exit;
+
+
+
+
+
+
   currentaddress:=GetAddressOnly(i,extra, @groupdata);
 
   result:=currentaddress;
   j:=i-addresslistfirst;
+  if j<0 then exit(0);
+
 
   if valuelist[j]='' then
   begin

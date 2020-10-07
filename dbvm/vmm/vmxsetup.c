@@ -19,6 +19,8 @@
 
 #include "epthandler.h"
 #include "neward.h"
+#include "displaydebug.h"
+#include "common.h"
 
 
 criticalSection setupVMX_lock;
@@ -27,6 +29,9 @@ volatile unsigned char *MSRBitmap;
 volatile unsigned char *IOBitmap;
 
 int hasEPTsupport=0;
+int TSCHooked=0;
+int hasNPsupport=1;
+
 
 extern void realmode_inthooks();
 extern void realmode_inthooks_end();
@@ -40,6 +45,8 @@ extern DWORD realmode_inthook_original12;
 extern DWORD realmode_inthook_original15;
 extern WORD realmode_inthook_conventional_memsize;
 
+
+
 void setupVMX_AMD(pcpuinfo currentcpuinfo)
 {
   //setup the vmcb
@@ -51,6 +58,46 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
     sendstringf("setupVMX_AMD for AP cpu\n");
   }
 
+#ifdef AMDNP
+  //nested paging, works. But using it for memory cloak is not as fast as on Intel (at best like stealthedit plugin on windows, which can be unstable)
+  currentcpuinfo->vmcb->NP_ENABLE=1;
+  currentcpuinfo->vmcb->G_PAT=readMSR(0x277);
+  //setup a pagebase describing the physical memory
+
+  volatile PPML4 pml4=(PPML4)malloc(4096);
+  zeromemory((volatile void*)pml4,4096);
+
+
+  currentcpuinfo->vmcb->N_CR3=VirtualToPhysical((void*)pml4);
+  sendstringf("Setup nCR3 at %6\n", currentcpuinfo->vmcb->N_CR3);
+
+  has_NP_1GBsupport=1;
+  has_NP_2MBsupport=1;
+
+  //copy the PML4 table and set a new CR3  (PML4 should never change after this, at least not on a global level)
+  PPML4 newpml4=(PPML4)malloc(4096);
+  copymem(newpml4, pml4table, 4096);
+
+  sendstringf("Created new PML4 table at %6 (PA %6)\n", newpml4, VirtualToPhysical((void*)newpml4));
+
+
+  *(QWORD*)(&newpml4[510])=currentcpuinfo->vmcb->N_CR3;
+  newpml4[510].P=1;
+  newpml4[510].RW=1;
+
+  *(QWORD*)(&newpml4[511])=VirtualToPhysical((void*)newpml4); //point to this one
+  newpml4[511].P=1;
+  newpml4[511].RW=1;
+
+  asm volatile ("": : :"memory");
+
+  setCR3(VirtualToPhysical((void*)newpml4));
+
+  sendstringf("Set CR3 to %6 . It is now %6\n", VirtualToPhysical((void*)newpml4), getCR3() );
+
+  _invlpg(0xffffff0000000000ULL);
+
+#endif
 
   currentcpuinfo->vmcb->InterceptVMRUN=1;
   currentcpuinfo->vmcb->GuestASID=1;
@@ -85,7 +132,7 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
   currentcpuinfo->vmcb->gdtr_base=getGDTbase();
   currentcpuinfo->vmcb->idtr_base=getIDTbase();
 
-  currentcpuinfo->vmcb->gdtr_limit=0x50;
+  currentcpuinfo->vmcb->gdtr_limit=0x58;
   currentcpuinfo->vmcb->idtr_limit=8*256;
 
   currentcpuinfo->vmcb->cs_selector=80;
@@ -98,6 +145,8 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
   currentcpuinfo->vmcb->ss_selector=8;
   currentcpuinfo->vmcb->fs_selector=8;
   currentcpuinfo->vmcb->gs_selector=8;
+  currentcpuinfo->vmcb->ldtr_selector=0;
+  currentcpuinfo->vmcb->tr_selector=64;
 
   sendstringf("cs_attrib(%x)  set to %x\n", ((UINT64)&currentcpuinfo->vmcb->cs_attrib-(UINT64)currentcpuinfo->vmcb), currentcpuinfo->vmcb->cs_attrib);
   sendstringf("gdtr_limit(%x)  set to %x\n", ((UINT64)&currentcpuinfo->vmcb->gdtr_limit-(UINT64)currentcpuinfo->vmcb), currentcpuinfo->vmcb->gdtr_limit);
@@ -112,16 +161,13 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
 
   currentcpuinfo->vmcb->DR7=0x400;
 
-  currentcpuinfo->vmcb->RSP=0x8fffc;
+  currentcpuinfo->vmcb->RSP=((UINT64)malloc(4096))+0x1000-0x28;
   currentcpuinfo->vmcb->RFLAGS=getRFLAGS();
 
   if (currentcpuinfo->cpunr==0)
-    currentcpuinfo->vmcb->RIP=(UINT64)quickboot;
+    currentcpuinfo->vmcb->RIP=(UINT64)reboot;
   else
-    currentcpuinfo->vmcb->RIP=(UINT64)infloop;
-
-
-
+    currentcpuinfo->vmcb->RIP=(UINT64)apentryvmx;
 
 
   if (!loadedOS)
@@ -131,14 +177,21 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
   currentcpuinfo->vmcb->InterceptVMMCALL=1;
   currentcpuinfo->vmcb->MSR_PROT=1; //some msr's need to be protected
 
-  //currentcpuinfo->vmcb->InterceptExceptions=(1<<3);// | (1<<14); //intercept int1, 3 and 14
+  currentcpuinfo->vmcb->InterceptExceptions=1;// | (1<<3);// | (1<<14); //intercept int1, 3 and 14
  // currentcpuinfo->vmcb->InterceptDR0_15Write=(1<<6); //dr6 so I can see what changed
 
 
 
- // currentcpuinfo->vmcb->InterceptINIT=1; //cpu init (init-sipi-sipi. I need to implement a virtual apic to suppot boot
+  /*
+   if (currentcpuinfo->cpunr)
+   {
+     currentcpuinfo->vmcb->InterceptINIT=1; //cpu init (init-sipi-sipi. I need to implement a virtual apic to suppot boot
+     currentcpuinfo->vmcb->InterceptCPUID=1;
+     currentcpuinfo->vmcb->InterceptExceptions=0xffffffff;
+     currentcpuinfo->vmcb->InstructionIntercept2=0xffffffff;
 
-
+     setCR8(15);
+   }*/
 
 
   if (MSRBitmap==NULL)
@@ -244,25 +297,6 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
     //gdt MUST be paged in
     gdt=(PGDT_ENTRY)(UINT64)mapPhysicalMemory(getPhysicalAddressVM(currentcpuinfo, originalstate->gdtbase, &notpaged), originalstate->gdtlimit);
 
-#ifdef DEBUG
-    {
-      int i,j;
-      sendstring("GDT=\n");
-      i=0;
-      j=0;
-      while (i<=(int)originalstate->gdtlimit)
-      {
-        for (j=0; ((j<8) && (i<=(int)originalstate->gdtlimit)); j++)
-        {
-          sendstringf("%2", ((unsigned char *)gdt)[i]);
-          i++;
-        }
-
-        sendstring("\n");
-
-      }
-    }
-#endif
 
     ULONG ldtlimit;
     if ((UINT64)originalstate->ldt)
@@ -278,58 +312,67 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
     }
 
     currentcpuinfo->vmcb->es_selector=originalstate->es;
+    currentcpuinfo->vmcb->es_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->es_AccessRights);
+    currentcpuinfo->vmcb->es_limit=originalstate->es_Limit;
+
     currentcpuinfo->vmcb->cs_selector=originalstate->cs;
+    currentcpuinfo->vmcb->cs_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->cs_AccessRights);
+    currentcpuinfo->vmcb->cs_limit=originalstate->cs_Limit;
+
     currentcpuinfo->vmcb->ss_selector=originalstate->ss;
+    currentcpuinfo->vmcb->ss_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->ss_AccessRights);
+    currentcpuinfo->vmcb->ss_limit=originalstate->ss_Limit;
+
     currentcpuinfo->vmcb->ds_selector=originalstate->ds;
+    currentcpuinfo->vmcb->ds_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->ds_AccessRights);
+    currentcpuinfo->vmcb->ds_limit=originalstate->ds_Limit;
+
     currentcpuinfo->vmcb->fs_selector=originalstate->fs;
+    currentcpuinfo->vmcb->fs_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->fs_AccessRights);
+    currentcpuinfo->vmcb->fs_limit=originalstate->fs_Limit;
+
     currentcpuinfo->vmcb->gs_selector=originalstate->gs;
+    currentcpuinfo->vmcb->gs_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->gs_AccessRights);
+    currentcpuinfo->vmcb->gs_limit=originalstate->gs_Limit;
+
     currentcpuinfo->vmcb->ldtr_selector=originalstate->ldt;
-  //  currentcpuinfo->vmcb->tr_selector=originalstate->tr;
+    currentcpuinfo->vmcb->tr_selector=originalstate->tr;
 
-    currentcpuinfo->vmcb->es_limit=getSegmentLimit(gdt, ldt, originalstate->es);
-    currentcpuinfo->vmcb->cs_limit=getSegmentLimit(gdt, ldt, originalstate->cs);
-    currentcpuinfo->vmcb->ss_limit=getSegmentLimit(gdt, ldt, originalstate->ss);
-    currentcpuinfo->vmcb->ds_limit=getSegmentLimit(gdt, ldt, originalstate->ds);
-    currentcpuinfo->vmcb->fs_limit=getSegmentLimit(gdt, ldt, originalstate->fs);
-    currentcpuinfo->vmcb->gs_limit=getSegmentLimit(gdt, ldt, originalstate->gs);
-    currentcpuinfo->vmcb->ldtr_limit=getSegmentLimit(gdt, ldt, originalstate->ldt);
-  //  currentcpuinfo->vmcb->tr_limit=getSegmentLimit(gdt, ldt, originalstate->tr);
-
-    currentcpuinfo->vmcb->es_base=getSegmentBase(gdt, ldt, originalstate->es);
-    currentcpuinfo->vmcb->cs_base=getSegmentBase(gdt, ldt, originalstate->cs);
-    currentcpuinfo->vmcb->ss_base=getSegmentBase(gdt, ldt, originalstate->ss);
-    currentcpuinfo->vmcb->ds_base=getSegmentBase(gdt, ldt, originalstate->ds);
     if (originalstate->originalLME)
     {
       //64-bit
+      currentcpuinfo->vmcb->cs_base=0;
+      currentcpuinfo->vmcb->ss_base=0;
+      currentcpuinfo->vmcb->ds_base=0;
+      currentcpuinfo->vmcb->es_base=0;
       currentcpuinfo->vmcb->fs_base=originalstate->fsbase;
       currentcpuinfo->vmcb->gs_base=originalstate->gsbase;
-    //  currentcpuinfo->vmcb->tr_base=getSegmentBaseEx(gdt,ldt,originalstate->tr, 1);
-
-      sendstringf("Getting base of RT. getSegmentBaseEx(gdt,ldt,originalstate->tr, 1); would say: %6\n", getSegmentBaseEx(gdt,ldt,originalstate->tr, 1));
+      currentcpuinfo->vmcb->tr_base=getSegmentBaseEx(gdt,ldt,originalstate->tr, 1);
     }
     else
     {
       //32-bit
+      currentcpuinfo->vmcb->cs_base=getSegmentBase(gdt, ldt, originalstate->cs);
+      currentcpuinfo->vmcb->ss_base=getSegmentBase(gdt, ldt, originalstate->ss);
+      currentcpuinfo->vmcb->ds_base=getSegmentBase(gdt, ldt, originalstate->ds);
+      currentcpuinfo->vmcb->es_base=getSegmentBase(gdt, ldt, originalstate->es);
       currentcpuinfo->vmcb->fs_base=getSegmentBase(gdt, ldt, originalstate->fs);
       currentcpuinfo->vmcb->gs_base=getSegmentBase(gdt, ldt, originalstate->gs);
-     // currentcpuinfo->vmcb->tr_base=getSegmentBase(gdt,ldt,originalstate->tr);
+      currentcpuinfo->vmcb->tr_base=getSegmentBase(gdt, ldt, originalstate->tr);
     }
+    currentcpuinfo->vmcb->ldtr_limit=getSegmentLimit(gdt, ldt, originalstate->ldt);
+    if (originalstate->tr==0)
+      currentcpuinfo->vmcb->tr_limit=0xffff;
+    else
+      currentcpuinfo->vmcb->tr_limit=getSegmentLimit(gdt, ldt, originalstate->tr);
+
     currentcpuinfo->vmcb->ldtr_base=getSegmentBase(gdt, ldt, originalstate->ldt);
-
-
-    currentcpuinfo->vmcb->es_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->es_AccessRights); // getSegmentAttrib(gdt,ldt,originalstate->es);
-    currentcpuinfo->vmcb->cs_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->cs_AccessRights); //getSegmentAttrib(gdt,ldt,originalstate->cs);
-    currentcpuinfo->vmcb->ss_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->ss_AccessRights);
-    currentcpuinfo->vmcb->ds_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->ds_AccessRights);
-    currentcpuinfo->vmcb->fs_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->fs_AccessRights);
-    currentcpuinfo->vmcb->gs_attrib=convertSegmentAccessRightsToSegmentAttrib(originalstate->gs_AccessRights);
     currentcpuinfo->vmcb->ldtr_attrib=getSegmentAttrib(gdt,ldt,originalstate->ldt);
 
-   // currentcpuinfo->vmcb->tr_attrib=getSegmentAttrib(gdt,ldt,originalstate->tr);
-
-    sendstringf("Getting attibs of RT. getSegmentAttrib(gdt,ldt,originalstate->tr) would say: %x\n", getSegmentAttrib(gdt,ldt,originalstate->tr));
-
+    if (originalstate->tr)
+      currentcpuinfo->vmcb->tr_attrib=getSegmentAttrib(gdt,ldt,originalstate->tr);
+    else
+      currentcpuinfo->vmcb->tr_attrib=0x8b;
 
     currentcpuinfo->vmcb->SYSENTER_CS=(UINT64)readMSR(IA32_SYSENTER_CS_MSR); //current msr
     currentcpuinfo->vmcb->SYSENTER_ESP=(UINT64)readMSR(IA32_SYSENTER_ESP_MSR);
@@ -339,11 +382,7 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
     currentcpuinfo->actual_sysenter_ESP=currentcpuinfo->vmcb->SYSENTER_ESP;
     currentcpuinfo->actual_sysenter_EIP=currentcpuinfo->vmcb->SYSENTER_EIP;
 
-
-
     currentcpuinfo->vmcb->DR7=originalstate->dr7;
-
-
 
     if (originalstate->originalLME)
     {
@@ -372,13 +411,129 @@ void setupVMX_AMD(pcpuinfo currentcpuinfo)
     if (originalstate)
       unmapPhysicalMemory(originalstate, sizeof(OriginalState));
   }
+  else
+  {
+    //no loadedinfo
+    /*
+
+    if (currentcpuinfo->cpunr)
+    {
+      UINT64 a,b,c,d;
+
+
+      currentcpuinfo->vmcb->CR0=0x10;
+      currentcpuinfo->vmcb->CR2=0;
+      currentcpuinfo->vmcb->CR3=0;
+      currentcpuinfo->vmcb->RFLAGS=2;
+      currentcpuinfo->vmcb->EFER=0x1000;
+      currentcpuinfo->vmcb->RIP=0;
+
+
+      Segment_Attribs attrib;
+      attrib.G=0;
+      attrib.D_B=0;
+      attrib.L=0;
+      attrib.P=1;
+      attrib.DPL=0;
+
+      //cs:
+      attrib.S=1;
+      attrib.Segment_type=0b1010;
+      currentcpuinfo->vmcb->cs_attrib=attrib.SegmentAttrib;
+      currentcpuinfo->vmcb->cs_selector=0x1000;
+      currentcpuinfo->vmcb->cs_base=0x10000;
+      currentcpuinfo->vmcb->cs_limit=0xffff;
+      {
+      PPDPTE_PAE pml4entry;
+      PPDPTE_PAE pagedirpointerentry;
+      PPDE_PAE pagedirentry;
+      PPTE_PAE pagetableentry;
+
+      VirtualAddressToPageEntries(0, &pml4entry, &pagedirpointerentry, &pagedirentry, &pagetableentry);
+      pagedirentry[0].RW=1;
+      pagedirentry[1].RW=1;
+      asm volatile ("": : :"memory");
+    }
+      *(unsigned char *)0x10000=0xf4; //hlt
+
+      //data
+      attrib.S=1;
+      attrib.Segment_type=0b0010;
+      currentcpuinfo->vmcb->ss_attrib=attrib.SegmentAttrib;
+      currentcpuinfo->vmcb->ss_selector=0;
+      currentcpuinfo->vmcb->ss_base=0;
+      currentcpuinfo->vmcb->ss_limit=0xffff;
+
+      currentcpuinfo->vmcb->ds_attrib=attrib.SegmentAttrib;
+      currentcpuinfo->vmcb->ds_selector=0;
+      currentcpuinfo->vmcb->ds_base=0;
+      currentcpuinfo->vmcb->ds_limit=0xffff;
+
+      currentcpuinfo->vmcb->es_attrib=attrib.SegmentAttrib;
+      currentcpuinfo->vmcb->es_selector=0;
+      currentcpuinfo->vmcb->es_base=0;
+      currentcpuinfo->vmcb->es_limit=0xffff;
+
+      currentcpuinfo->vmcb->fs_attrib=attrib.SegmentAttrib;
+      currentcpuinfo->vmcb->fs_selector=0;
+      currentcpuinfo->vmcb->fs_base=0;
+      currentcpuinfo->vmcb->fs_limit=0xffff;
+
+      currentcpuinfo->vmcb->gs_attrib=attrib.SegmentAttrib;
+      currentcpuinfo->vmcb->gs_selector=0;
+      currentcpuinfo->vmcb->gs_base=0;
+      currentcpuinfo->vmcb->gs_limit=0xffff;
+
+      //ldtr:
+      attrib.S=0;
+      attrib.Segment_type=0b0010;
+      currentcpuinfo->vmcb->ldtr_attrib=attrib.SegmentAttrib;
+      currentcpuinfo->vmcb->ldtr_selector=0;
+      currentcpuinfo->vmcb->ldtr_base=0;
+      currentcpuinfo->vmcb->ldtr_limit=0xffff;
+
+      //tr:
+      attrib.S=0;
+      attrib.Segment_type=0b0011;
+      currentcpuinfo->vmcb->tr_attrib=attrib.SegmentAttrib;
+      currentcpuinfo->vmcb->tr_selector=0;
+      currentcpuinfo->vmcb->tr_base=0;
+      currentcpuinfo->vmcb->tr_limit=0xffff;
+
+
+      currentcpuinfo->vmcb->gdtr_base=0;
+      currentcpuinfo->vmcb->gdtr_limit=0xffff;
+
+      currentcpuinfo->vmcb->idtr_base=0;
+      currentcpuinfo->vmcb->idtr_limit=0xffff;
+
+
+      a=1;
+      _cpuid(&a,&b,&c,&d);
+
+      currentcpuinfo->vmcb->RAX=0;
+      currentcpuinfo->vmcb->RSP=0;
+
+
+      setDR0(0);
+      setDR1(0);
+      setDR2(0);
+      setDR3(0);
+
+      currentcpuinfo->vmcb->DR6=0xffff0ff0;
+      currentcpuinfo->vmcb->DR7=0x400;
+
+      currentcpuinfo->vmcb->VMCB_CLEAN_BITS=0;
+    }*/
+  }
 
 
 
+
+
+  sendstringf("Configured cpu %d\n", currentcpuinfo->cpunr);
   currentcpuinfo->vmxsetup=1;
-
   csLeave(&setupVMX_lock);
-
 
 }
 
@@ -518,30 +673,68 @@ int vmx_addSingleSteppingReason(pcpuinfo currentcpuinfo, int reason, int ID)
 int vmx_enableSingleStepMode(void)
 {
   pcpuinfo c=getcpuinfo();
-  sendstring("Enabling single step mode\n");
+  sendstringf("%d Enabling single step mode\n", c->cpunr);
 
- /* if ((vmread(vm_entry_interruptioninfo) >> 31)==0)
-    vmwrite(vm_guest_interruptability_state,2); //execute at least one instruction
-  else
-    sendstringf("Not setting the interruptability state\n");*/
 
-  if (vmx_enableProcBasedFeature(PBEF_MONITOR_TRAP_FLAG))
+  if (isAMD)
   {
-    sendstring("Using the monitor trap flag\n");
-    c->singleStepping.Method=1;
+    sendstringf("%d CS:RIP=%x:%6 RCX=%d\n", c->cpunr, c->vmcb->cs_selector, c->vmcb->RIP);
+
+    //break on external interrupts and exceptions
+    c->vmcb->InterceptVINTR=1;
+    c->vmcb->InterceptINTR=1;
+    c->vmcb->InterceptExceptions=0x0000ffff;
+
+    //perhaps enable INTERRUPT_SHADOW?
+
+    //mark the intercepts as changed
+    //sendstringf("b c->vmcb->VMCB_CLEAN_BITS=%6\n",c->vmcb->VMCB_CLEAN_BITS);
+    c->vmcb->VMCB_CLEAN_BITS&=~(1<<0);
+    c->vmcb->VMCB_CLEAN_BITS=0;
+   //sendstringf("a c->vmcb->VMCB_CLEAN_BITS=%6\n",c->vmcb->VMCB_CLEAN_BITS);
+
+    RFLAGS v;
+    v.value=c->vmcb->RFLAGS;
+    v.TF=1; //single step mode
+    v.RF=1;
+    if (v.IF)
+      c->vmcb->INTERRUPT_SHADOW=1;
+
+    //todo: intercept pushf/popf/iret and the original RF flag state (though for a single step that should have no effect
+
+    c->vmcb->RFLAGS=v.value;
+    c->singleStepping.Method=3; //Trap flag
+
     return 1;
+
   }
   else
   {
-    c->singleStepping.Method=2;
-    if (vmx_enableProcBasedFeature(PBEF_INTERRUPT_WINDOW_EXITING))
-    {
-      if ((vmread(vm_entry_interruptioninfo) >> 31)==0) //if no interrupt pending
-        vmwrite(vm_guest_interruptability_state,2); //execute at least one instruction
-      //else go to that interrupt that is pending and then stop
+    sendstring("\n");
 
-      sendstring("Using the interrupt window\n");
+   /* if ((vmread(vm_entry_interruptioninfo) >> 31)==0)
+      vmwrite(vm_guest_interruptability_state,2); //execute at least one instruction
+    else
+      sendstringf("Not setting the interruptability state\n");*/
+
+    if (vmx_enableProcBasedFeature(PBEF_MONITOR_TRAP_FLAG))
+    {
+      sendstring("Using the monitor trap flag\n");
+      c->singleStepping.Method=1;
       return 1;
+    }
+    else
+    {
+      c->singleStepping.Method=2;
+      if (vmx_enableProcBasedFeature(PBEF_INTERRUPT_WINDOW_EXITING))
+      {
+        if ((vmread(vm_entry_interruptioninfo) >> 31)==0) //if no interrupt pending
+          vmwrite(vm_guest_interruptability_state,2); //execute at least one instruction
+        //else go to that interrupt that is pending and then stop
+
+        sendstring("Using the interrupt window\n");
+        return 1;
+      }
     }
   }
 
@@ -553,14 +746,40 @@ int vmx_disableSingleStepMode(void)
   int r=0;
   pcpuinfo c=getcpuinfo();
 
-  sendstring("Disabling single step mode\n");
+  sendstringf("%d Disabling single step mode\n", c->cpunr);
 
-  if (c->singleStepping.Method==1)
-    r=vmx_disableProcBasedFeature(PBEF_MONITOR_TRAP_FLAG);
+  if (isAMD)
+  {
+    //shouldn't be needed but do it anyhow
+    RFLAGS v;
+    v.value=c->vmcb->RFLAGS;
+    v.TF=0; //single step mode
+    //todo: intercept pushf/popf/iret
 
-  if (c->singleStepping.Method==2)
-    r=vmx_disableProcBasedFeature(PBEF_INTERRUPT_WINDOW_EXITING);
+    c->vmcb->RFLAGS=v.value;
+    c->singleStepping.Method=0;
 
+    c->vmcb->InterceptVINTR=0;
+    c->vmcb->InterceptINTR=0;
+    c->vmcb->InterceptExceptions=0; //todo: load current exceptions hooks
+
+
+    //mark the intercepts as changed
+    sendstringf("b c->vmcb->VMCB_CLEAN_BITS=%6\n",c->vmcb->VMCB_CLEAN_BITS);
+    c->vmcb->VMCB_CLEAN_BITS&=~(1<<0);
+    c->vmcb->VMCB_CLEAN_BITS=0;
+    sendstringf("a c->vmcb->VMCB_CLEAN_BITS=%6\n",c->vmcb->VMCB_CLEAN_BITS);
+
+    return 1;
+  }
+  else
+  {
+    if (c->singleStepping.Method==1)
+      r=vmx_disableProcBasedFeature(PBEF_MONITOR_TRAP_FLAG);
+
+    if (c->singleStepping.Method==2)
+      r=vmx_disableProcBasedFeature(PBEF_INTERRUPT_WINDOW_EXITING);
+  }
   return r;
 }
 
@@ -661,6 +880,11 @@ int setupEPT(pcpuinfo currentcpuinfo)
 
         //setup callbacks for MTRR msr edits
 
+        /*
+        vmx_setMSRWriteExit(IA32_MTRR_PHYSBASE0);
+        vmx_setMSRWriteExit(IA32_MTRR_PHYSBASE1);
+        */
+
         initMemTypeRanges();
       }
 
@@ -685,9 +909,6 @@ void setup8086WaitForSIPI(pcpuinfo currentcpuinfo, int setupvmcontrols)
   Access_Rights reg_csaccessrights,reg_segaccessrights;
   DWORD gdtbase, idtbase;
 
-
-
-
   sendstringf("entering sleepmode for ap cpu\n");
 
   //todo: use unrestricted mode if possible
@@ -701,6 +922,8 @@ void setup8086WaitForSIPI(pcpuinfo currentcpuinfo, int setupvmcontrols)
     reg_csaccessrights.P=1;
     reg_csaccessrights.G=0;
     reg_csaccessrights.D_B=0;
+    reg_csaccessrights.L=0;
+    reg_csaccessrights.unusable=0;
 
     reg_segaccessrights.AccessRights=0;
     reg_segaccessrights.Segment_type=3;
@@ -709,6 +932,8 @@ void setup8086WaitForSIPI(pcpuinfo currentcpuinfo, int setupvmcontrols)
     reg_segaccessrights.P=1;
     reg_segaccessrights.G=0;
     reg_segaccessrights.D_B=0;
+    reg_segaccessrights.unusable=0;
+
   }
   else
   {
@@ -722,6 +947,7 @@ void setup8086WaitForSIPI(pcpuinfo currentcpuinfo, int setupvmcontrols)
     reg_csaccessrights.P=1;
     reg_csaccessrights.G=0;
     reg_csaccessrights.D_B=0;
+    reg_csaccessrights.unusable=0;
 
     reg_segaccessrights=reg_csaccessrights;
   }
@@ -780,11 +1006,13 @@ void setup8086WaitForSIPI(pcpuinfo currentcpuinfo, int setupvmcontrols)
     vmwrite(vm_cr3_targetvalue0,(UINT64)0xffffffffffffffffULL); //cr3-target value 0
   }
 
+
+
+
+
   if (hasUnrestrictedSupport)
   {
-    vmwrite(vm_cr0_read_shadow,0x10); //cr0 read shadow
-    vmwrite(vm_cr4_read_shadow,(UINT64)0); //cr4 read shadow
-
+    vmwrite(vm_guest_cr3, 0);
     vmwrite(vm_guest_cr0, 0x10 | (IA32_VMX_CR0_FIXED0 & 0xFFFFFFFF7FFFFFFEULL)); //no pg, or PE
     vmwrite(vm_guest_cr4, IA32_VMX_CR4_FIXED0);
 
@@ -805,64 +1033,79 @@ void setup8086WaitForSIPI(pcpuinfo currentcpuinfo, int setupvmcontrols)
   }
 
 
+
+
   vmwrite(vm_guest_es,(UINT64)0); //es selector
-  vmwrite(vm_guest_cs,(UINT64)0xf000); //cs selector
-  vmwrite(vm_guest_ss,(UINT64)0); //ss selector
-  vmwrite(vm_guest_ds,(UINT64)0); //ds selector
-  vmwrite(vm_guest_fs,(UINT64)0); //fs selector
-  vmwrite(vm_guest_gs,(UINT64)0); //gs selector
-  vmwrite(vm_guest_ldtr,(UINT64)0); //ldtr selector
-  vmwrite(vm_guest_tr,0); //the tss selector
-
   vmwrite(vm_guest_es_limit,(UINT64)0xffff); //es limit
-  vmwrite(vm_guest_cs_limit,(UINT64)0xffff); //cs limit
-  vmwrite(vm_guest_ss_limit,(UINT64)0xffff); //ss limit
-  vmwrite(vm_guest_ds_limit,(UINT64)0xffff); //ds limit
-  vmwrite(vm_guest_fs_limit,(UINT64)0xffff); //fs limit
-  vmwrite(vm_guest_gs_limit,(UINT64)0xffff); //gs limit
-
-  if (hasUnrestrictedSupport)
-  {
-    vmwrite(vm_guest_ldtr_limit,(UINT64)0xffff); //ldtr limit
-    vmwrite(vm_guest_tr_limit,0xffff); //tr limit
-  }
-  else
-  {
-    vmwrite(vm_guest_ldtr_limit,(UINT64)0); //ldtr limit
-    vmwrite(vm_guest_tr_limit,(ULONG)sizeof(TSS)+32+8192+1); //tr limit
-  }
-
   vmwrite(vm_guest_es_base,(UINT64)0); //es base
+  vmwrite(vm_guest_es_access_rights,(UINT64)reg_segaccessrights.AccessRights); //es access rights
+
+  vmwrite(vm_guest_ss,(UINT64)0); //ss selector
+   vmwrite(vm_guest_ss_limit,(UINT64)0xffff); //ss limit
+   vmwrite(vm_guest_ss_base,(UINT64)0); //ss base
+   vmwrite(vm_guest_ss_access_rights,(UINT64)reg_segaccessrights.AccessRights); //ss access rights
+
+   vmwrite(vm_guest_ds,(UINT64)0); //ds selector
+   vmwrite(vm_guest_ds_limit,(UINT64)0xffff); //ds limit
+   vmwrite(vm_guest_ds_base,(UINT64)0); //ds base
+   vmwrite(vm_guest_ds_access_rights,(UINT64)reg_segaccessrights.AccessRights); //ds access rights
+
+   vmwrite(vm_guest_fs,(UINT64)0); //fs selector
+   vmwrite(vm_guest_fs_limit,(UINT64)0xffff); //fs limit
+   vmwrite(vm_guest_fs_base,(UINT64)0); //fs base
+   vmwrite(vm_guest_fs_access_rights,(UINT64)reg_segaccessrights.AccessRights); //fs access rights
+
+   vmwrite(vm_guest_gs,(UINT64)0); //gs selector
+   vmwrite(vm_guest_gs_limit,(UINT64)0xffff); //gs limit
+   vmwrite(vm_guest_gs_base,(UINT64)0); //gs base
+   vmwrite(vm_guest_gs_access_rights,(UINT64)reg_segaccessrights.AccessRights); //gs access rights
+
+
+  vmwrite(vm_guest_cs,(UINT64)0); //cs selector
+  vmwrite(vm_guest_cs_limit,(UINT64)0xffff); //cs limit
   if (hasUnrestrictedSupport)
     vmwrite(vm_guest_cs_base,(UINT64)0xffff0000); //cs base
   else
     vmwrite(vm_guest_cs_base,(UINT64)0xf0000); //cs base
+  vmwrite(vm_guest_cs_access_rights,(UINT64)reg_segaccessrights/*reg_csaccessrights*/.AccessRights); //cs access rights
 
 
-
-  vmwrite(vm_guest_ss_base,(UINT64)0); //ss base
-  vmwrite(vm_guest_ds_base,(UINT64)0); //ds base
-  vmwrite(vm_guest_fs_base,(UINT64)0); //fs base
-  vmwrite(vm_guest_gs_base,(UINT64)0); //gs base
+  vmwrite(vm_guest_ldtr,(UINT64)0); //ldtr selector
+  if (hasUnrestrictedSupport)
+    vmwrite(vm_guest_ldtr_limit,(UINT64)0xffff); //ldtr limit
+  else
+    vmwrite(vm_guest_ldtr_limit,(UINT64)0); //ldtr limit
   vmwrite(vm_guest_ldtr_base,(UINT64)0); //ldtr base
+  if (hasUnrestrictedSupport)
+    vmwrite(vm_guest_ldtr_access_rights,0x82); //ldtr access rights
+  else
+    vmwrite(vm_guest_ldtr_access_rights,(UINT64)(1<<16)); //ldtr access rights (bit 16 is unusable bit)
+
+  vmwrite(vm_guest_tr,0); //the tss selector
+
+  if (hasUnrestrictedSupport)
+    vmwrite(vm_guest_tr_limit,0xffff); //tr limit
+  else
+    vmwrite(vm_guest_tr_limit,(ULONG)sizeof(TSS)+32+8192+1); //tr limit
 
   if (hasUnrestrictedSupport)
     vmwrite(vm_guest_tr_base,0); //tr basebase
   else
     vmwrite(vm_guest_tr_base,(UINT64)VirtualToPhysical(VirtualMachineTSS_V8086)); //tr basebase
 
-  vmwrite(vm_guest_es_access_rights,(UINT64)reg_segaccessrights.AccessRights); //es access rights
-  vmwrite(vm_guest_cs_access_rights,(UINT64)reg_csaccessrights.AccessRights); //cs access rights
-  vmwrite(vm_guest_ss_access_rights,(UINT64)reg_segaccessrights.AccessRights); //ss access rights
-  vmwrite(vm_guest_ds_access_rights,(UINT64)reg_segaccessrights.AccessRights); //ds access rights
-  vmwrite(vm_guest_fs_access_rights,(UINT64)reg_segaccessrights.AccessRights); //fs access rights
-  vmwrite(vm_guest_gs_access_rights,(UINT64)reg_segaccessrights.AccessRights); //gs access rights
-  if (hasUnrestrictedSupport)
-    vmwrite(vm_guest_ldtr_access_rights,0x82); //ldtr access rights
-  else
-    vmwrite(vm_guest_ldtr_access_rights,(UINT64)(1<<16)); //ldtr access rights (bit 16 is unusable bit
-
   vmwrite(vm_guest_tr_access_rights,0x8b); //tr access rights
+
+
+
+  currentcpuinfo->efer=0;
+  vmwrite(vm_entry_controls, vmread(vm_entry_controls) & (~VMENTRYC_IA32E_MODE_GUEST));
+  vmwrite(vm_guest_IA32_EFER, vmread(vm_guest_IA32_EFER) & ~(1<<8)); //disable EFER.LME
+  vmwrite(vm_guest_IA32_EFER, vmread(vm_guest_IA32_EFER) & ~(1<<10)); //disable EFER.LMA
+
+
+
+
+
 
 
 
@@ -880,10 +1123,8 @@ void setup8086WaitForSIPI(pcpuinfo currentcpuinfo, int setupvmcontrols)
   RFLAGS guestrflags;
 
 
-  vmwrite(vm_guest_activity_state,(UINT64)3); //guest activity state, wait for sipi
-
-  vmwrite(vm_guest_rsp,(UINT64)0xffc); //rsp
-  vmwrite(vm_guest_rip,(UINT64)(&bochswaitforsipiloop)-(UINT64)(&movetoreal)); //rip //should never be executed
+  vmwrite(vm_guest_rsp,(UINT64)0); //rsp
+  vmwrite(vm_guest_rip,(UINT64)0); //rip //should never be executed
 
   guestrflags.value=0;
   guestrflags.reserved1=1;
@@ -899,11 +1140,11 @@ void setup8086WaitForSIPI(pcpuinfo currentcpuinfo, int setupvmcontrols)
     vmwrite(vm_guest_cr3,0);
   }
 
-  currentcpuinfo->efer=0;
-  vmwrite(vm_entry_controls, vmread(vm_entry_controls) & (~VMENTRYC_IA32E_MODE_GUEST));
+
 
 
   vmwrite(vm_guest_rflags,guestrflags.value ); //rflag
+  vmwrite(vm_guest_activity_state,(UINT64)3); //guest activity state, wait for sipi
 }
 
 void vmx_setMSRReadExit(DWORD msrValue)
@@ -947,6 +1188,35 @@ void vmx_removeMSRWriteExit(DWORD msrValue)
   {
     msrValue=msrValue-0xc0000000;
     MSRBitmap[3072+msrValue/8]&=~(1 << (msrValue % 8));
+  }
+}
+
+
+void vmx_enableTSCHook()
+{
+  if ((readMSR(IA32_VMX_PROCBASED_CTLS_MSR)>>32) & RDTSC_EXITING)
+    vmwrite(vm_execution_controls_cpu, vmread(vm_execution_controls_cpu) | RDTSC_EXITING);
+
+  vmx_setMSRReadExit(IA32_TIME_STAMP_COUNTER);
+  vmx_setMSRWriteExit(IA32_TIME_STAMP_COUNTER);
+
+  vmx_setMSRWriteExit(IA32_TSC_ADJUST);
+
+  TSCHooked=1;
+}
+
+void vmx_disableTSCHook()
+{
+  if (useSpeedhack==0)
+  {
+    if ((readMSR(IA32_VMX_PROCBASED_CTLS_MSR)>>32) & RDTSC_EXITING)
+      vmwrite(vm_execution_controls_cpu, vmread(vm_execution_controls_cpu) & (QWORD)~(QWORD)RDTSC_EXITING);
+
+    vmx_removeMSRReadExit(IA32_TIME_STAMP_COUNTER);
+    vmx_removeMSRWriteExit(IA32_TIME_STAMP_COUNTER);
+    vmx_removeMSRWriteExit(IA32_TSC_ADJUST);
+
+    TSCHooked=0;
   }
 }
 
@@ -1165,22 +1435,18 @@ void setupVMX(pcpuinfo currentcpuinfo)
 
   sendstringf("Set vm_execution_controls_pin to %8 (became %8)\n", (ULONG)IA32_VMX_PINBASED_CTLS, (DWORD)vmread(vm_execution_controls_pin));
 
-#ifdef DEBUG
-/*
 
+#if DISPLAYDEBUG==1
   //check if the system supports preemption, and if so, enable it
   {
     ULONG usablepinbasedBits=(IA32_VMX_PINBASED_CTLS >> 32);
     if (usablepinbasedBits & ACTIVATE_VMX_PREEMPTION_TIMER)
     {
       displayline("Preemption is possible\n");
-      vmwrite(vm_execution_controls_pin,(ULONG)IA32_VMX_PINBASED_CTLS | ACTIVATE_VMX_PREEMPTION_TIMER);
-      vmwrite(vm_preemption_timer_value,IA32_VMX_MISC.vmx_premption_timer_tsc_relation*100000);
+      vmwrite(vm_execution_controls_pin,vmread(vm_execution_controls_pin) | ACTIVATE_VMX_PREEMPTION_TIMER);
+      vmwrite(vm_preemption_timer_value,10000);
     }
-
   }
-*/
-
 #endif
 
 
@@ -1188,9 +1454,11 @@ void setupVMX(pcpuinfo currentcpuinfo)
 
 
 
-  vmwrite(0x4004,(UINT64)0xffff); //exception bitmap (0xffff=0-15 0xffffffff=0-31)
 
- // vmwrite(0x4004,(UINT64)0);
+  vmwrite(vm_exception_bitmap,(UINT64)0xffff); //exception bitmap (0xffff=0-15 0xffffffff=0-31)
+ // vmwrite(vm_exception_bitmap,(1<<1) | (1<<3) | (1<<14));
+
+
   vmwrite(0x4006,(UINT64)0); //page fault error-code mask
   vmwrite(0x4008,(UINT64)0); //page fault error-code match
   vmwrite(0x400a,(UINT64)1); //cr3-target count
@@ -1239,7 +1507,7 @@ void setupVMX(pcpuinfo currentcpuinfo)
 
 
   vmwrite(0x4014,(UINT64)0); //vm-entry msr-load count
-  vmwrite(0x4016,(UINT64)0); //vm-entry interruption-information field
+  vmwrite(vm_entry_interruptioninfo,(UINT64)0); //vm-entry interruption-information field
   vmwrite(0x4018,(UINT64)0); //vm-entry exception error code
   vmwrite(0x401a,(UINT64)0); //vm-entry instruction length
   vmwrite(0x401c,(UINT64)0); //TPR threshold
@@ -1300,6 +1568,11 @@ void setupVMX(pcpuinfo currentcpuinfo)
       //vmwrite(vm_cr0_guest_host_mask,(UINT64)IA32_VMX_CR0_FIXED0 & 0xFFFFFFFF7FFFFFFEULL); //cr0 guest/host mask 1=guest owned
       vmwrite(vm_cr0_guest_host_mask,(UINT64)0xFFFFFFFF7FFFFFFEULL);
       vmwrite(vm_cr4_guest_host_mask,(UINT64)IA32_VMX_CR4_FIXED0); //same with cr4 but do guard the VMX bit
+
+
+      //needs less interrupt hooks
+      vmwrite(vm_exception_bitmap,(1<<1) | (1<<3));
+
     }
     else
     {
@@ -1308,17 +1581,6 @@ void setupVMX(pcpuinfo currentcpuinfo)
     }
   }
 
-#ifdef TSCHOOK
-  {
-    if ((readMSR(IA32_VMX_PROCBASED_CTLS_MSR)>>32) & RDTSC_EXITING)
-      vmwrite(vm_execution_controls_cpu, vmread(vm_execution_controls_cpu) | RDTSC_EXITING);
-
-    vmx_setMSRReadExit(IA32_TIME_STAMP_COUNTER);
-    vmx_setMSRWriteExit(IA32_TIME_STAMP_COUNTER);
-
-    vmx_setMSRWriteExit(IA32_TSC_ADJUST);
-  }
-#endif
 
 
 
@@ -1519,15 +1781,15 @@ void setupVMX(pcpuinfo currentcpuinfo)
       vmwrite(vm_guest_es_access_rights,originalstate->es_AccessRights);
       vmwrite(vm_guest_es_limit,originalstate->es_Limit);
 
-      vmwrite(vm_guest_cs,(UINT64)originalstate->cs); //es selector
+      vmwrite(vm_guest_cs,(UINT64)originalstate->cs); //cs selector
       vmwrite(vm_guest_cs_access_rights,originalstate->cs_AccessRights);
       vmwrite(vm_guest_cs_limit,originalstate->cs_Limit);
 
-      vmwrite(vm_guest_ss,(UINT64)originalstate->ss); //es selector
+      vmwrite(vm_guest_ss,(UINT64)originalstate->ss); //ss selector
       vmwrite(vm_guest_ss_access_rights,originalstate->ss_AccessRights);
       vmwrite(vm_guest_ss_limit,originalstate->ss_Limit);
 
-      vmwrite(vm_guest_ds,(UINT64)originalstate->ds); //es selector
+      vmwrite(vm_guest_ds,(UINT64)originalstate->ds); //ds selector
       vmwrite(vm_guest_ds_access_rights,originalstate->ds_AccessRights);
       vmwrite(vm_guest_ds_limit,originalstate->ds_Limit);
 
@@ -1579,8 +1841,6 @@ void setupVMX(pcpuinfo currentcpuinfo)
         vmwrite(vm_guest_tr_limit,getSegmentLimit(gdt,ldt,originalstate->tr));
 
       vmwrite(vm_guest_ldtr_base,getSegmentBase(gdt,ldt,originalstate->ldt));
-
-
       vmwrite(vm_guest_ldtr_access_rights,getSegmentAccessRights(gdt,ldt,originalstate->ldt));
 
       if (originalstate->tr)
@@ -1599,7 +1859,7 @@ void setupVMX(pcpuinfo currentcpuinfo)
 
 
       vmwrite(vm_guest_dr7,(UINT64)originalstate->dr7); //dr7
-      vmwrite(0x4826,(UINT64)0); //normal activity state
+      vmwrite(vm_guest_activity_state,(UINT64)0); //normal activity state
       if (originalstate->originalLME)
       {
         vmwrite(vm_guest_rsp,(UINT64)originalstate->rsp); //rsp
@@ -1802,7 +2062,7 @@ void setupVMX(pcpuinfo currentcpuinfo)
 
       vmwrite(vm_guest_dr7,(UINT64)0x400); //dr7
 
-      vmwrite(0x4826,(UINT64)0); //guest activity state, normal
+      vmwrite(vm_guest_activity_state,(UINT64)0); //guest activity state, normal
       //vmwrite(vm_guest_rsp,(UINT64)0x8fffc); //rsp
       vmwrite(vm_guest_rsp,((UINT64)malloc(4096))+0x1000-0x28); //rsp, 32 bytes scratch and 8 bytes for return value (so unaligned)
       vmwrite(vm_guest_rip,(UINT64)reboot); //rip
@@ -1842,7 +2102,8 @@ void setupVMX(pcpuinfo currentcpuinfo)
         {
           sendstringf("No low region:\n");
           sendARD();
-          while (1);
+          ddDrawRectangle(0,DDVerticalResolution-100,100,100,0xff0000);
+          while (1) outportb(0x80,0xde);
         }
 
 

@@ -57,6 +57,8 @@ type
 
     hasSetDEPPolicy: boolean;
 
+    neverstarted: boolean;
+
     function getDebugThreadHanderFromThreadID(tid: dword): TDebugThreadHandler;
 
     procedure GetBreakpointList(address: uint_ptr; size: integer; var bplist: TBreakpointSplitArray);
@@ -165,6 +167,8 @@ var
 resourcestring
   rsTheFollowingOpcodesAccessed = 'The following opcodes accessed %s';
   rsTheFollowingOpcodesWriteTo = 'The following opcodes write to %s';
+  rsTheFollowingAddressesExecute = 'The following codes execute %s';
+
 
 
 implementation
@@ -1604,6 +1608,9 @@ var
 begin
   if size=0 then exit;
 
+  if breakpointmethod=bpmint3 then //not possible for this
+    breakpointmethod:=bpmDebugRegister;
+
   //split up address and size into memory alligned sections
 
 
@@ -1653,8 +1660,7 @@ procedure TDebuggerthread.FindCodeByBP(address: uint_ptr; size: integer; bpt: TB
 var method: TBreakpointMethod;
 begin
   method:=preferedBreakpointMethod;
-  if method=bpmint3 then //not possible for this
-    method:=bpmDebugRegister;
+
 
   FindCodeByBP(address,size,bpt,method);
 end;
@@ -2187,7 +2193,7 @@ begin
       //32 bit: check if it has noexecute support
       if assigned(GetProcessDEPPolicy) and assigned(SetProcessDEPPolicy) then
       begin
-        ph:=OpenProcess(PROCESS_ALL_ACCESS,false,processid);    //the debuggerhandle does not get this properly
+        ph:=OpenProcess(ifthen<dword>(GetSystemType<=6,$1f0fff, process_all_access),false,processid);    //the debuggerhandle does not get this properly
         try
           if GetProcessDEPPolicy(ph, @depflags, @perm) then
           begin
@@ -2708,7 +2714,6 @@ end;
 procedure TDebuggerthread.defaultConstructorcode;
 begin
   debuggerCS := TGuiSafeCriticalSection.Create;
-
   OnAttachEvent := TEvent.Create(nil, True, False, '');
   OnContinueEvent := Tevent.Create(nil, true, False, '');
   threadlist := TList.Create;
@@ -2722,30 +2727,32 @@ begin
   canusedebugregs := formsettings.rbDebugAsBreakpoint.Checked;
 
   //setup the used debugger
-  if getconnection<>nil then
-    CurrentDebuggerInterface:=TNetworkDebuggerInterface.create
-  else
-  begin
-    {$ifdef windows}
-    if formsettings.cbUseWindowsDebugger.checked then
-      CurrentDebuggerInterface:=TWindowsDebuggerInterface.create
-    else if formsettings.cbUseVEHDebugger.checked then
-      CurrentDebuggerInterface:=TVEHDebugInterface.create
-    else if formsettings.cbKDebug.checked then
+  try
+    if getconnection<>nil then
+      CurrentDebuggerInterface:=TNetworkDebuggerInterface.create
+    else
     begin
-      globalDebug:=formsettings.cbGlobalDebug.checked;
-      CurrentDebuggerInterface:=TKernelDebugInterface.create(globalDebug, formsettings.cbCanStepKernelcode.checked);
+      {$ifdef windows}
+      if formsettings.cbUseWindowsDebugger.checked then
+        CurrentDebuggerInterface:=TWindowsDebuggerInterface.create
+      else if formsettings.cbUseVEHDebugger.checked then
+        CurrentDebuggerInterface:=TVEHDebugInterface.create
+      else if formsettings.cbKDebug.checked then
+      begin
+        globalDebug:=formsettings.cbGlobalDebug.checked;
+        CurrentDebuggerInterface:=TKernelDebugInterface.create(globalDebug, formsettings.cbCanStepKernelcode.checked);
+      end;
+      {$endif}
+
+      {$ifdef darwin}
+      outputdebugstring('Setting the CurrentDebuggerInterface to the MacException Debug interface');
+      CurrentDebuggerInterface:=TMacExceptionDebugInterface.create;
+      {$endif}
     end;
-    {$endif}
-
-    {$ifdef darwin}
-    outputdebugstring('Setting the CurrentDebuggerInterface to the MacException Debug interface');
-    CurrentDebuggerInterface:=TMacExceptionDebugInterface.create;
-    {$endif}
+  except
+    neverstarted:=true;
+    raise;
   end;
-
-
-  //clean up some debug views
 
   if formdebugstrings = nil then
     formdebugstrings := Tformdebugstrings.Create(application);
@@ -2802,8 +2809,11 @@ end;
 destructor TDebuggerthread.Destroy;
 var i: integer;
 begin
-  terminate;
-  waitfor;
+  if neverstarted=false then
+  begin
+    terminate;
+    waitfor;
+  end;
 
 
   if OnAttachEvent <> nil then

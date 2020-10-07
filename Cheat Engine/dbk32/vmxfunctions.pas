@@ -83,6 +83,9 @@ const
   VMCALL_SETSPEEDHACK = 62;
 
 
+  VMCALL_DISABLETSCHOOK=66;
+  VMCALL_ENABLETSCHOOK=67;
+
 
   //---
   //watch options:
@@ -304,6 +307,8 @@ type
       newOF: 0..1;            //28
       reserved: 0..7;         //29,30,31
     end;
+    changeXMM: QWORD; //16 nibbles, each bit is one dword
+    changeFP: QWORD; //just one bit, each bit is a fpu field
 
     newRAX: QWORD;
     newRBX: QWORD;
@@ -322,6 +327,55 @@ type
     newR13: QWORD;
     newR14: QWORD;
     newR15: QWORD;
+
+    newFP0: QWORD;
+    newFP0_H: QWORD;
+    newFP1: QWORD;
+    newFP1_H: QWORD;
+    newFP2: QWORD;
+    newFP2_H: QWORD;
+    newFP3: QWORD;
+    newFP3_H: QWORD;
+    newFP4: QWORD;
+    newFP4_H: QWORD;
+    newFP5: QWORD;
+    newFP5_H: QWORD;
+    newFP6: QWORD;
+    newFP6_H: QWORD;
+    newFP7: QWORD;
+    newFP7_H: QWORD;
+    XMM0: QWORD;
+    XMM0_H: QWORD;
+    XMM1: QWORD;
+    XMM1_H: QWORD;
+    XMM2: QWORD;
+    XMM2_H: QWORD;
+    XMM3: QWORD;
+    XMM3_H: QWORD;
+    XMM4: QWORD;
+    XMM4_H: QWORD;
+    XMM5: QWORD;
+    XMM5_H: QWORD;
+    XMM6: QWORD;
+    XMM6_H: QWORD;
+    XMM7: QWORD;
+    XMM7_H: QWORD;
+    XMM8: QWORD;
+    XMM8_H: QWORD;
+    XMM9: QWORD;
+    XMM9_H: QWORD;
+    XMM10: QWORD;
+    XMM10_H: QWORD;
+    XMM11: QWORD;
+    XMM11_H: QWORD;
+    XMM12: QWORD;
+    XMM12_H: QWORD;
+    XMM13: QWORD;
+    XMM13_H: QWORD;
+    XMM14: QWORD;
+    XMM14_H: QWORD;
+    XMM15: QWORD;
+    XMM15_H: QWORD;
 
   end;
 
@@ -389,7 +443,7 @@ function dbvm_watch_executes(PhysicalAddress: QWORD; size: integer; Options: DWO
 function dbvm_watch_retrievelog(ID: integer; results: PPageEventListDescriptor; var resultsize: integer): integer;
 function dbvm_watch_delete(ID: integer): boolean;
 
-function dbvm_cloak_activate(PhysicalBase: QWORD; virtualAddress: Qword=0): integer;
+function dbvm_cloak_activate(PhysicalBase: QWORD; virtualAddress: Qword=0; mode: integer=1): integer;
 function dbvm_cloak_deactivate(PhysicalBase: QWORD): boolean;
 function dbvm_cloak_readoriginal(PhysicalBase: QWORD; destination: pointer): integer;
 function dbvm_cloak_writeoriginal(PhysicalBase: QWORD; source: pointer): integer;
@@ -403,10 +457,14 @@ function dbvm_get_statistics(out statistics: TDBVMStatistics):qword;
 
 procedure dbvm_setTSCAdjust(enabled: boolean; timeout: integer);
 procedure dbvm_speedhack_setSpeed(speed: double);
+procedure dbvm_enableTSCHook;
+function dbvm_disableTSCHook: boolean;
 
 
 function dbvm_log_cr3values_start: boolean;
 function dbvm_log_cr3values_stop(log: pointer): boolean;
+
+function dbvm_findCR3(hProcess: THandle): QWORD;
 
 function dbvm_registerPlugin(pluginaddress: pointer; pluginsize: integer; plugintype: integer): integer;
 procedure dbvm_raisePMI;
@@ -436,7 +494,8 @@ implementation
 
 uses DBK32functions, cefuncproc, PEInfoFunctions, NewKernelHandler, syncobjs,
   ProcessHandlerUnit, Globals, AvgLvlTree, maps, debuggertypedefinitions,
-  DebugHelper, frmBreakpointlistunit, math{$ifdef darwin},mactypes{$endif};
+  DebugHelper, frmBreakpointlistunit, math{$ifdef darwin},mactypes{$endif},
+  multicpuexecution, CEDebugger;
 
 resourcestring
 rsInvalidInstruction = 'Invalid instruction';
@@ -1369,7 +1428,7 @@ var vmcallinfo: packed record
   copied: DWORD;
 end;
 begin
-  //OutputDebugString('vmxfunctions.pas: dbvm_watch_retrievelog (results='+inttohex(QWORD(results),8)+' resultsize='+inttostr(resultsize)+')');
+ // OutputDebugString('vmxfunctions.pas: dbvm_watch_retrievelog for ID '+inttostr(id)+' (results='+inttohex(QWORD(results),8)+' resultsize='+inttostr(resultsize)+')');
   result:=1;
   vmcallinfo.structsize:=sizeof(vmcallinfo);
   vmcallinfo.level2pass:=vmx_password2;
@@ -1382,7 +1441,7 @@ begin
   result:=vmcall(@vmcallinfo,vmx_password1);  //returns 2 on a too small size
   resultsize:=vmcallinfo.resultssize;
 
-  //OutputDebugString('dbvm_watch_retrievelog vmcall returned '+inttostr(result)+'  (resultsize='+inttostr(resultsize)+')');
+ // OutputDebugString('dbvm_watch_retrievelog vmcall returned '+inttostr(result)+'  (resultsize='+inttostr(resultsize)+')');
 
   resultsize:=vmcallinfo.resultssize;
 end;
@@ -1402,13 +1461,14 @@ begin
   result:=vmcall(@vmcallinfo,vmx_password1)=0;  //returns 0 on success
 end;
 
-function dbvm_cloak_activate(PhysicalBase: QWORD; virtualAddress: QWORD=0): integer;
+function dbvm_cloak_activate(PhysicalBase: QWORD; virtualAddress: QWORD=0; mode: integer=1): integer;
 var
   vmcallinfo: packed record
     structsize: dword;
     level2pass: dword;
     command: dword;
     PhysicalBase: QWORD;
+    Mode: QWORD;
   end;
   i: integer;
 begin
@@ -1419,6 +1479,7 @@ begin
   vmcallinfo.level2pass:=vmx_password2;
   vmcallinfo.command:=VMCALL_CLOAK_ACTIVATE;
   vmcallinfo.PhysicalBase:=PhysicalBase;
+  vmcallinfo.Mode:=mode;
   result:=vmcall(@vmcallinfo,vmx_password1);
 
   outputdebugstring('dbvm_cloak_activate: result='+inttostr(result));
@@ -1769,6 +1830,41 @@ begin
 end;
 
 
+function dbvm_enableTSCHook_internal(parameters: pointer): BOOL; stdcall;
+var vmcallinfo: packed record
+  structsize: dword;
+  level2pass: dword;
+  command: dword;
+end;
+begin
+  vmcallinfo.structsize:=sizeof(vmcallinfo);
+  vmcallinfo.level2pass:=vmx_password2;
+  vmcallinfo.command:=VMCALL_ENABLETSCHOOK;
+  result:=vmcall(@vmcallinfo,vmx_password1)<>0;
+end;
+
+procedure dbvm_enableTSCHook;
+begin
+  foreachcpu(dbvm_enableTSCHook_internal,nil);
+end;
+
+function dbvm_disableTSCHook_internal(parameters: pointer): BOOL; stdcall;
+var vmcallinfo: packed record
+  structsize: dword;
+  level2pass: dword;
+  command: dword;
+end;
+begin
+  vmcallinfo.structsize:=sizeof(vmcallinfo);
+  vmcallinfo.level2pass:=vmx_password2;
+  vmcallinfo.command:=VMCALL_DISABLETSCHOOK;
+  result:=vmcall(@vmcallinfo,vmx_password1)<>0;
+end;
+
+function dbvm_disableTSCHook: boolean;
+begin
+  result:=foreachcpu(dbvm_disableTSCHook_internal,nil);
+end;
 
 procedure dbvm_ept_reset;
 var vmcallinfo: packed record
@@ -1816,6 +1912,205 @@ begin
   vmcallinfo.command:=VMCALL_LOG_CR3VALUES_STOP;
   vmcallinfo.destination:=ptruint(log);
   result:=vmcall(@vmcallinfo,vmx_password1)<>0;
+end;
+
+
+var
+  PIDToCR3Map: tmap;
+  dbvm_findCR3_CS: TCriticalsection;
+
+function dbvm_findCR3(hProcess: thandle): QWORD;
+{
+Finds a compatible CR3
+on systems with PID enabled there could be 2. a usermode and a system CR3
+Right now it doesn't care which one is found
+
+on fail, return 0
+}
+var
+  processheader: record
+    address: ptruint;
+    data: array[0..4095] of byte;
+  end;
+
+  teb: record
+    address: ptruint;
+    data: array[0..79] of byte;
+  end;
+
+  allocated: record
+    address: ptruint; //last resort
+    data: array[0..15] of byte;
+  end;
+
+  pid: qword;
+  r: qword;
+  ths: thandle;
+  me32: TModuleEntry32;
+  te32: TThreadEntry32;
+  x: ptruint;
+
+  th: THandle;
+  tbi: _THREAD_BASIC_INFORMATION;
+
+  cr3log: array [0..512] of qword;
+  i: integer;
+
+  temp: array [0..8191] of byte;
+begin
+  processheader.address:=0;
+  teb.address:=0;
+  allocated.address:=0;
+
+  result:=0;
+  {$ifdef windows}
+
+  dbvm_findCR3_CS.enter;
+  try
+    if (hprocess=0) or (hprocess=ptruint(-1)) or (hprocess=ptruint(-2)) then exit;
+
+    pid:=0;
+    if assigned(NewKernelHandler.GetProcessId) then
+      pid:=GetProcessId(hProcess);
+
+    if pid=0 then exit; //please use a valid handle
+
+    if PIDToCR3Map=nil then
+      PIDToCR3Map:=TMap.Create(ituPtrSize,8);
+
+    if PIDToCR3Map.GetData(pid,r) then
+      exit(r);
+
+
+    processheader.address:=0;
+
+    //find the process base module
+    ths:=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE or TH32CS_SNAPMODULE32, pid);
+    zeromemory(@me32,sizeof(me32));
+    me32.dwSize:=sizeof(me32);
+    if module32first(ths,me32) then
+      processheader.address:=ptruint(me32.modBaseAddr);
+
+    closehandle(ths);
+
+    //find the first thread
+
+    ths:=CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, pid);
+    zeromemory(@te32,sizeof(te32));
+    te32.dwSize:=sizeof(te32);
+    if Thread32First(ths,te32) then
+    repeat
+      if te32.th32OwnerProcessID=pid then
+      begin
+        th:=OpenThread(ifthen(GetSystemType<=6,THREAD_QUERY_INFORMATION, THREAD_QUERY_LIMITED_INFORMATION), false, te32.th32ThreadID);
+
+        if NtQueryInformationThread(th, ThreadBasicInformation, @tbi, sizeof(tbi), @x)=0 then
+          teb.address:=qword(tbi.TebBaseAddress)
+        else
+          teb.address:=0;
+
+        closehandle(th);
+
+
+        break;
+      end;
+    until Thread32Next(ths,te32)=false;
+
+    for i:=0 to 15 do
+      allocated.data[i]:=random(255);
+
+    if (processheader.address=0) and (teb.address=0) then
+    begin
+      allocated.address:=ptruint(VirtualAllocEx(hprocess, nil,4096,MEM_COMMIT or MEM_RESERVE, PAGE_READWRITE));
+      if allocated.address=0 then exit; //give up
+    end;
+
+    zeromemory(@cr3log, 4096);
+
+    if dbvm_log_cr3values_start then
+    begin
+      if processheader.address<>0 then
+        if readProcessMemory(hprocess, pointer(processheader.address), @processheader.data, 4096,x)=false then
+          processheader.address:=0;
+
+      if teb.address<>0 then
+        if readProcessMemory(hprocess, pointer(teb.address), @teb.data, 80,x)=false then
+          teb.address:=0;
+
+      if (processheader.address=0) and (teb.address=0) and (allocated.address=0) then       //last attempt to save this operation
+        allocated.address:=ptruint(VirtualAllocEx(hprocess, nil,4096,MEM_COMMIT or MEM_RESERVE, PAGE_READWRITE));
+
+      if allocated.address<>0 then
+      begin
+
+        if WriteProcessMemory(hProcess, pointer(allocated.address), @allocated.data[0],80,x)=false then
+        begin
+          //fuuuuuck
+          VirtualFreeEx(hprocess, pointer(allocated.address),0,MEM_RELEASE);
+          allocated.address:=0;
+        end;
+      end;
+
+      if dbvm_log_cr3values_stop(@cr3log[0]) then
+      begin
+        //cleanup memory
+
+        if allocated.address<>0 then
+          VirtualFreeEx(hprocess, pointer(allocated.address),0,MEM_RELEASE);
+
+        //go through the list of CR3's and check which ones do not match
+        for i:=0 to 511 do
+        begin
+          if cr3log[i]<>0 then
+          begin
+            if processheader.address<>0 then
+            begin
+              if ReadProcessMemoryCR3(cr3log[i],pointer(processheader.address),@temp[0],4096,x) then
+              begin
+                if not CompareMem(@processheader.data[0], @temp[0], 4096) then
+                  continue;
+              end
+              else
+                continue;
+            end;
+
+            if teb.address<>0 then
+            begin
+              if ReadProcessMemoryCR3(cr3log[i],pointer(teb.address),@temp[0],80,x) then
+              begin
+                if not CompareMem(@teb.data[0], @temp[0],80) then
+                  continue;
+              end
+              else
+                continue;
+            end;
+
+            if allocated.address<>0 then
+            begin
+              if ReadProcessMemoryCR3(cr3log[i],pointer(allocated.address),@temp[0],16,x) then
+              begin
+                if not CompareMem(@allocated.data[0], @temp[0],16) then
+                  continue;
+              end
+              else
+                continue;
+            end;
+
+            //still here so valid
+            r:=cr3log[i];
+            PIDToCR3Map.add(pid, r);
+            exit(cr3log[i]);
+          end
+          else
+            break;
+        end;
+      end;
+    end;
+
+  finally
+    dbvm_findCR3_CS.leave;
+  end;
+  {$endif}
 end;
 
 function dbvm_registerPlugin(pluginaddress: pointer; pluginsize: integer; plugintype: integer): integer;
@@ -2447,4 +2742,6 @@ initialization
   {$endif}
   cloakedregionscs:=TCriticalSection.Create;
   breakpointscs:=TCriticalSection.Create;
+
+  dbvm_findCR3_CS:=TCriticalSection.create;
 end.

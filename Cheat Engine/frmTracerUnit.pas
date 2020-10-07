@@ -13,8 +13,7 @@ uses
   {$endif}
   NewKernelHandler, LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
   Dialogs, StdCtrls, ExtCtrls, Buttons, LResources, commonTypeDefs, frmFindDialogUnit,
-  clipbrd, Menus, ComCtrls, frmStackviewunit, frmFloatingPointPanelUnit, LuaByteTable,
-  disassembler, debuggertypedefinitions;
+  Menus, ComCtrls, frmStackviewunit, frmFloatingPointPanelUnit, disassembler, debuggertypedefinitions;
 
 type
   TTraceDebugInfo=class
@@ -215,14 +214,14 @@ type
 implementation
 
 
-uses CEDebugger, debughelper, MemoryBrowserFormUnit, frmTracerConfigUnit,
+uses  LuaByteTable, clipbrd, CEDebugger, debughelper, MemoryBrowserFormUnit, frmTracerConfigUnit,
   ProcessHandlerUnit, Globals, Parsers, strutils, CEFuncProc,
   LuaHandler, symbolhandler, byteinterpreter,
   tracerIgnore, LuaForm, lua, lualib,lauxlib, LuaClass;
 
 resourcestring
   rsSearch = 'Search';
-  rsTypeTheLUAConditionYouWantToSearchForExampleEAX0x1 = 'Type the (LUA) condition you want to search for (Example: EAX==0x1234)';
+  rsTypeTheLUAConditionYouWantToSearchForExampleEAX0x1 = 'Type the (LUA) condition you want to search for (Example: EAX==0x1234)    '#13#10'Also available: referencedAddress (integer), referencedBytes (bytetable), instruction (string)';
 
 destructor TTraceDebugInfo.destroy;
 begin
@@ -381,6 +380,7 @@ begin
       da:=tdisassembler.Create;
       da.showsymbols:=symhandler.showsymbols;
       da.showmodules:=symhandler.showmodules;
+      da.showsections:=symhandler.showsections;
     end;
     s:=da.disassemble(a, s2);
 
@@ -1222,6 +1222,20 @@ begin
   end;
 end;
 
+function bytesToLuaByteTableString(bytes: PByteArray; size: integer): string;
+var i: integer;
+begin
+  result:='{';
+  for i:=0 to size-1 do
+  begin
+    if i>0 then
+      result:=result+','+inttostr(bytes[i])
+    else
+      result:=result+inttostr(bytes[i]);
+  end;
+
+  result:=result+'}';
+end;
 
 procedure TfrmTracer.MenuItem4Click(Sender: TObject);
 var
@@ -1229,6 +1243,11 @@ var
   c: PContext;
   check: boolean;
   searchstring: string;
+
+  script: tstringlist=nil;
+  usesReferencedAddress: boolean=false;
+  usesReferencedBytes: boolean=false;
+  usesInstruction: boolean=false;
 begin
   if finddialog=nil then
   begin
@@ -1251,6 +1270,17 @@ begin
   if check then
   begin
     searchstring:='return '+lastsearchstring;
+    usesReferencedAddress:=searchstring.Contains('referencedAddress'); //screw the user if he uses comments
+    usesReferencedBytes:=searchstring.Contains('referencedBytes');
+    usesInstruction:=searchstring.Contains('instruction');
+
+    script:=tstringlist.Create;
+    script.Text:=searchstring;
+
+    script.Insert(0,''); //space for referencedAddress
+    script.Insert(1,''); //space for referencedBytes
+    script.Insert(2,''); //space for instruction
+
 
 
     stopsearch:=false;
@@ -1265,12 +1295,23 @@ begin
       else
         i:=lvTracer.Selected.AbsoluteIndex+1;
 
+
+
       while (i<lvTracer.items.count) and (not stopsearch) do
       begin
         c:=@TTraceDebugInfo(lvTracer.Items[i].data).c;
         if c<>nil then
         begin
-          if CheckIfConditionIsMetContext(0, c, searchstring) then
+          if usesReferencedAddress then
+            script[0]:='local referencedAddress=0x'+inttohex(TTraceDebugInfo(lvTracer.Items[i].data).referencedAddress,8);
+
+          if usesReferencedBytes then
+            script[1]:='local referencedBytes='+bytesToLuaByteTableString(TTraceDebugInfo(lvTracer.Items[i].data).bytes, TTraceDebugInfo(lvTracer.Items[i].data).bytesize);
+
+          if usesInstruction then
+            script[2]:='local instruction=[['+TTraceDebugInfo(lvTracer.Items[i].data).instruction+']]';
+
+          if CheckIfConditionIsMetContext(0, c, script.text) then
           begin
             lvTracer.Items[i].Selected:=true;
             lvTracer.MakeSelectionVisible;
@@ -1297,7 +1338,16 @@ begin
         c:=@TTraceDebugInfo(lvTracer.Items[i].data).c;
         if c<>nil then
         begin
-          if CheckIfConditionIsMetContext(0, c, searchstring) then
+          if usesReferencedAddress then
+            script[0]:='local referencedAddress=0x'+inttohex(TTraceDebugInfo(lvTracer.Items[i].data).referencedAddress,8);
+
+          if usesReferencedBytes then
+            script[1]:='local referencedBytes='+bytesToLuaByteTableString(TTraceDebugInfo(lvTracer.Items[i].data).bytes, TTraceDebugInfo(lvTracer.Items[i].data).bytesize);
+
+          if usesInstruction then
+            script[2]:='local instruction=[['+TTraceDebugInfo(lvTracer.Items[i].data).instruction+']]';
+
+          if CheckIfConditionIsMetContext(0, c, script.text) then
           begin
             lvTracer.Items[i].Selected:=true;
             lvTracer.MakeSelectionVisible;
@@ -1315,6 +1365,9 @@ begin
 
     pnlSearch.visible:=false;
   end;
+
+  if script<>nil then
+    freeandnil(script);
 end;
 
 procedure TfrmTracer.Panel1Click(Sender: TObject);
@@ -1707,9 +1760,34 @@ begin
 end;
 
 procedure TfrmTracer.lvTracerDblClick(Sender: TObject);
+var
+  a: ptruint;
+  syma: ptruint;
+  sym: string;
+  i: integer;
+  e: boolean;
 begin
+
   if (lvTracer.selected<>nil) and (lvTracer.selected.data<>nil) then
-    memorybrowser.disassemblerview.SelectedAddress:=TTraceDebugInfo(lvTracer.selected.data).c.{$ifdef cpu64}rip{$else}Eip{$endif};
+  begin
+    syma:=0;
+    a:=TTraceDebugInfo(lvTracer.selected.data).c.{$ifdef cpu64}rip{$else}Eip{$endif};
+    e:=true;
+    i:=RPos(' - ', lvTracer.Selected.Text);
+    if i>0 then
+    begin
+      sym:=copy(lvTracer.Selected.Text,1,i);
+      sym:=trim(sym);
+
+      if sym<>'' then
+        syma:=symhandler.getAddressFromName(sym,false,e);
+    end;
+
+    if not e then
+      memorybrowser.disassemblerview.SelectedAddress:=syma
+    else
+      memorybrowser.disassemblerview.SelectedAddress:=a
+  end;
 end;
 
 procedure TfrmTracer.Panel1Resize(Sender: TObject);

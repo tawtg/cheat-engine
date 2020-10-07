@@ -54,6 +54,8 @@ procedure luaclass_newClassFunction(L: PLua_State; InitialAddMetaDataFunction: T
 
 procedure luaclass_register(c: TClass; InitialAddMetaDataFunction: TAddMetaDataFunction);
 
+procedure luaclass_pushClass(L: PLua_State; o: TObject); stdcall; //for plugins
+
 implementation
 
 uses LuaClassArray, LuaObject, LuaComponent, luahandler;
@@ -217,6 +219,10 @@ begin
     lua_pushnil(L);
 end;
 
+procedure luaclass_pushClass(L: PLua_State; o: TObject); stdcall; //for plugins
+begin
+  luaclass_newClass(L,o);
+end;
 
 function luaclass_getClassObject(L: PLua_state; paramstart: pinteger=nil; paramcount: pinteger=nil): pointer;// inline;
 //called as first thing by class functions. This is in case a 6.2 code executed the function manually
@@ -579,33 +585,41 @@ begin
         if lua_isnil(L, -1) then
         begin
           //not a property
+          lua_pop(L,1);
+
           o:=tobject(lua_touserdata(L,1)^);
           if o is TComponent then
           begin
             lua_pushcfunction(L, component_findComponentByName);
-            lua_pushvalue(L, 1);
-            lua_pushvalue(L, 2);
-            lua_call(L, 2, 1);
-            result:=1;
-            exit;
+            lua_pushvalue(L, 1); //userdata
+            lua_pushvalue(L, 2); //keyname
+            lua_call(L, 2, 1); //component_findComponentByName
+
+            if not lua_isnil(L,-1) then exit(1);
+
+            //still here so not a component of the component
+
+            lua_pop(L,1);
           end;
+
+          if lua_type(L, 2)=LUA_TSTRING then
+          begin
+            //check if there is a __defaultstringgetindexhandler defined in the metatable
+            lua_pushstring(L, '__defaultstringgetindexhandler');
+            lua_gettable(L, metatable);
+            if lua_isfunction(L,-1) then
+            begin
+              lua_pushvalue(L, 2); //key
+              lua_call(L, 1, 1); //call __defaultstringgetindexhandler(key)
+              exit(1);
+            end
+            else
+              lua_pop(L,1);
+          end;
+
         end;
 
-        if lua_type(L, 2)=LUA_TSTRING then
-        begin
-          //check if there is a __defaultstringgetindexhandler defined in the metatable
-          lua_pushstring(L, '__defaultstringgetindexhandler');
-          lua_gettable(L, metatable);
-          if lua_isfunction(L,-1) then
-          begin
-            lua_pushvalue(L, 2); //key
-            lua_call(L, 1, 1); //call __defaultintegergetindexhandler(key)
-            result:=1;
-            exit;
-          end
-          else
-            lua_pop(L,1);
-        end;
+
 
       end;
     end;

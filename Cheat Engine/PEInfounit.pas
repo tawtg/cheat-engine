@@ -187,6 +187,7 @@ resourcestring
   rsPEBoundImportTable = 'Bound import table';
   rsPEImportAddressTable = 'import address table';
   rsPEDelayImportDescriptionTable = 'Delay import descriptor table';
+  rsPECLRRuntimeTable = 'CLR Runtime table';
   rsPEReserved = 'reserved';
   rsPECharacteristics2 = 'Characteristics=%x (should be 0)';
   rsPETimeDatastamp = 'Time datastamp=%x';
@@ -235,7 +236,9 @@ end;
 function peinfo_getdatabase(header: pointer; headersize: integer=0): ptrUint;
 {$ifdef windows}
 var
-    ImageNTHeader: PImageNtHeaders;
+  ImageNTHeader: PImageNtHeaders;
+  Sectionheader: PImageSectionHeader;
+  i: integer;
 {$endif}
 begin
   result:=0;
@@ -243,6 +246,9 @@ begin
   if (headersize=0) or (PImageDosHeader(header)^._lfanew<=headersize-sizeof(TImageNtHeaders)) then
   begin
     ImageNTHeader:=PImageNtHeaders(ptrUint(header)+PImageDosHeader(header)^._lfanew);
+    if ImageNTHeader.FileHeader.Machine=$8664 then
+      exit;
+
     result:=ImageNTHeader.OptionalHeader.BaseOfData;
   end;
   {$endif}
@@ -335,6 +341,9 @@ var MZheader: ttreenode;
     ImageImportDirectory: PImageImportDirectory;
 
     ImageDebugDirectory: PImageDebugDirectory;
+    ImageCLRRuntimeDirectory: PImageCLRRuntimeDirectory;
+
+
 
 
     sFileType,sCharacteristics, sType: string;
@@ -446,7 +455,7 @@ begin
       PEItv.Items.addchild(PEHeader,format(rsPEPreferedImagebase ,[ImageNTHeader^.OptionalHeader.ImageBase]));
     end
     else
-      PEItv.Items.addchild(PEHeader,format(rsPEPreferedImagebase2 ,[PUINT64(@ImageNTHeader^.OptionalHeader.BaseOfData)^]));
+      PEItv.Items.addchild(PEHeader,format(rsPEPreferedImagebase2 ,[PImageOptionalHeader64(@ImageNTHeader^.OptionalHeader)^.ImageBase]));
 
 
     PEItv.Items.addchild(PEHeader,format(rsPESectionAllignment ,[ImageNTHeader^.OptionalHeader.SectionAlignment]));
@@ -604,13 +613,22 @@ begin
        11: sType:=rsPEBoundImportTable;
        12: sType:=rsPEImportAddressTable;
        13: sType:=rsPEDelayImportDescriptionTable;
+       14: sType:=rsPECLRRuntimeTable;
        else sType:=rsPEReserved;
       end;
 
+
       if is64bit then
-        tempnode:=PEItv.Items.addchild(datadir,format('%.8x - %x (%s)' ,[PImageOptionalHeader64(@ImageNTHeader^.OptionalHeader)^.DataDirectory[i].VirtualAddress, PImageOptionalHeader64(@ImageNTHeader^.OptionalHeader)^.DataDirectory[i].Size, sType]))
+        tempaddress:=ptrUint(loadedmodule)+PImageOptionalHeader64(@ImageNTHeader^.OptionalHeader)^.DataDirectory[i].VirtualAddress
       else
-        tempnode:=PEItv.Items.addchild(datadir,format('%.8x - %x (%s)' ,[ImageNTHeader^.OptionalHeader.DataDirectory[i].VirtualAddress, ImageNTHeader^.OptionalHeader.DataDirectory[i].Size, sType]));
+        tempaddress:=ptrUint(loadedmodule)+ImageNTHeader^.OptionalHeader.DataDirectory[i].VirtualAddress;
+
+      if is64bit then
+        tempnode:=PEItv.Items.addchild(datadir,format('%.8x - %.8x - %x (%s)' ,[tempaddress, PImageOptionalHeader64(@ImageNTHeader^.OptionalHeader)^.DataDirectory[i].VirtualAddress, PImageOptionalHeader64(@ImageNTHeader^.OptionalHeader)^.DataDirectory[i].Size, sType]))
+      else
+        tempnode:=PEItv.Items.addchild(datadir,format('%.8x - %.8x - %x (%s)' ,[tempaddress, ImageNTHeader^.OptionalHeader.DataDirectory[i].VirtualAddress, ImageNTHeader^.OptionalHeader.DataDirectory[i].Size, sType]));
+
+
 
 
       if (is64bit and (PImageOptionalHeader64(@ImageNTHeader^.OptionalHeader)^.DataDirectory[i].VirtualAddress=0)) or
@@ -900,6 +918,30 @@ begin
           end;
         end;
 
+      end
+      else
+      if i=14 then
+      begin
+        //parse CLR info
+        if is64bit then
+          ImageCLRRuntimeDirectory:=PImageCLRRuntimeDirectory(ptrUint(loadedmodule)+PImageOptionalHeader64(@ImageNTHeader^.OptionalHeader)^.DataDirectory[i].VirtualAddress)
+        else
+          ImageCLRRuntimeDirectory:=PImageCLRRuntimeDirectory(ptrUint(loadedmodule)+ImageNTHeader^.OptionalHeader.DataDirectory[i].VirtualAddress);
+
+
+        PEItv.Items.addchild(tempnode, format('x: %x', [ptruint(ImageCLRRuntimeDirectory)]));
+
+        PEItv.Items.addchild(tempnode, format('cb: %d', [ImageCLRRuntimeDirectory^.cb]));
+        PEItv.Items.addchild(tempnode, format('MajorRuntimeVersion: %d', [ImageCLRRuntimeDirectory^.MajorRuntimeVersion]));
+        PEItv.Items.addchild(tempnode, format('MinorRuntimeVersion: %d', [ImageCLRRuntimeDirectory^.MinorRuntimeVersion]));
+        PEItv.Items.addchild(tempnode, format('Flags: 0x%x', [ImageCLRRuntimeDirectory^.Flags]));
+        PEItv.Items.addchild(tempnode, format('MetaData: 0x%x (%d)', [ImageCLRRuntimeDirectory^.MetaData.VirtualAddress, ImageCLRRuntimeDirectory^.MetaData.Size]));
+        PEItv.Items.addchild(tempnode, format('Resources: 0x%x (%d)', [ImageCLRRuntimeDirectory^.Resources.VirtualAddress, ImageCLRRuntimeDirectory^.Resources.Size]));
+        PEItv.Items.addchild(tempnode, format('StrongNameSignature: 0x%x (%d)', [ImageCLRRuntimeDirectory^.StrongNameSignature.VirtualAddress, ImageCLRRuntimeDirectory^.StrongNameSignature.Size]));
+        PEItv.Items.addchild(tempnode, format('CodeManagerTable: 0x%x (%d)', [ImageCLRRuntimeDirectory^.CodeManagerTable.VirtualAddress, ImageCLRRuntimeDirectory^.CodeManagerTable.Size]));
+        PEItv.Items.addchild(tempnode, format('VTableFixups: 0x%x (%d)', [ImageCLRRuntimeDirectory^.VTableFixups.VirtualAddress, ImageCLRRuntimeDirectory^.VTableFixups.Size]));
+        PEItv.Items.addchild(tempnode, format('ExportAddressTableJumps: 0x%x (%d)', [ImageCLRRuntimeDirectory^.ExportAddressTableJumps.VirtualAddress, ImageCLRRuntimeDirectory^.ExportAddressTableJumps.Size]));
+        PEItv.Items.addchild(tempnode, format('ManagedNativeHeader: 0x%x (%d)', [ImageCLRRuntimeDirectory^.ManagedNativeHeader.VirtualAddress, ImageCLRRuntimeDirectory^.ManagedNativeHeader.Size]));
       end;
 
     end;
