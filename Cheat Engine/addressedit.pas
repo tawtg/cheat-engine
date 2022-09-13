@@ -5,7 +5,7 @@ unit addressedit;
 interface
 
 uses
-  Classes, SysUtils, StdCtrls, Graphics;
+  Classes, SysUtils, StdCtrls, Graphics, betterControls;
 
 
 type
@@ -13,6 +13,7 @@ type
   private
     finvalidAddress: boolean;
     finvalidcolor: Tcolor;
+    fValidColor: TColor;
     function getAddress: ptruint;
   protected
     procedure Change; override;
@@ -22,12 +23,13 @@ type
     constructor Create(AOwner: TComponent); override;
   published
     property invalidColor: Tcolor read fInvalidColor write fInvalidColor;
+    property validColor: TColor read fValidColor write fValidColor;
   end;
 
 
 implementation
 
-uses symbolhandler, newkernelhandler, ProcessHandlerUnit;
+uses symbolhandler, newkernelhandler, ProcessHandlerUnit{$ifdef darwin},macport{$endif};
 
 function TAddressEdit.getAddress: ptruint;
 var
@@ -47,7 +49,7 @@ begin
   if finvalidaddress then
     Font.Color:=invalidColor
   else
-    Font.Color:=clDefault;
+    Font.Color:=fValidColor;
 
 
 end;
@@ -64,6 +66,7 @@ constructor TAddressEdit.Create(AOwner: TComponent);
 begin
   inherited create(AOwner);
   fInvalidColor:=clRed;
+  fValidColor:=clWindowtext;
 end;
 
 end.

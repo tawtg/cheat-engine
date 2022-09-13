@@ -12,7 +12,7 @@ uses
   {$endif}
   LResources, LCLIntf, Messages, SysUtils, Variants, Classes, Graphics,
   Controls, Forms, Dialogs, StdCtrls, Menus,Clipbrd, ExtCtrls, Buttons,
-  frmFloatingPointPanelUnit, NewKernelHandler,cefuncproc, frmStackViewUnit;
+  frmFloatingPointPanelUnit, NewKernelHandler,cefuncproc, frmStackViewUnit, betterControls;
 
 type
 
@@ -20,6 +20,7 @@ type
 
   TFormFoundCodeListExtra = class(TForm)
     eiImageList: TImageList;
+    lblGSBaseKernel: TLabel;
     lblGSBase: TLabel;
     lblCR3: TLabel;
     Label18: TLabel;
@@ -82,7 +83,7 @@ type
     procedure setprobably(address:ptrUint);
   public
     { Public declarations }
-    context: Context;
+    context: PContext;  //needs to free this on destroy
     stack: record
       savedsize: dword;
       stack: pbyte;
@@ -105,7 +106,7 @@ type
 
 implementation
 
-uses MemoryBrowserFormUnit;
+uses MemoryBrowserFormUnit, ProcessHandlerUnit;
 
 resourcestring
   rsTheValueOfThePointerNeededToFindThisAddressIsProba = 'The value of the '
@@ -141,27 +142,7 @@ end;
 
 procedure TFormFoundCodeListExtra.Copyaddresstoclipboard1Click(
   Sender: TObject);
-var clip: tclipboard;
-s: string;
 begin
-  s:=lblRAX.Caption+#13#10;
-  s:=s+lblRBX.Caption+#13#10;
-  s:=s+lblRCX.Caption+#13#10;
-  s:=s+lblRDX.Caption+#13#10;
-  s:=s+lblRSI.Caption+#13#10;
-  s:=s+lblRDI.Caption+#13#10;
-  s:=s+lblRBP.Caption+#13#10;
-  s:=s+lblRSP.Caption+#13#10;
-  s:=s+lblRIP.Caption+#13#10;
-  s:=s+#13#10;
-  s:=s+Format(rsProbableBasePointer, [inttohex(probably, 8)])+#13#10#13#10;
-
-  s:=s+label1.Caption+#13#10;
-  s:=s+label2.Caption+#13#10;
-  s:=s+label3.Caption+#13#10;
-  s:=s+label4.Caption+#13#10;
-  s:=s+label5.Caption+#13#10;
-  clipboard.SetTextBuf(pchar(s));
 end;
 
 procedure TFormFoundCodeListExtra.Copyguesstoclipboard1Click(
@@ -173,11 +154,24 @@ begin
   clipboard.SetTextBuf(pchar(s));
 end;
 
+procedure setFontColor(control: TWinControl; color: TColor);
+var i: integer;
+begin
+  for i:=0 to control.ControlCount-1 do
+  begin
+    control.controls[i].Font.color:=color;
+    if control.Controls[i] is twincontrol then setfontcolor(twincontrol(control.controls[i]),color);
+  end;
+end;
+
 procedure TFormFoundCodeListExtra.FormCreate(Sender: TObject);
 var x: array of integer;
 begin
   setlength(x,0);
   loadformposition(self,x);
+
+  Font.Color:=clWindowtext;
+  setFontColor(self, clWindowtext);
 end;
 
 procedure TFormFoundCodeListExtra.FormDestroy(Sender: TObject);
@@ -188,11 +182,15 @@ begin
   if fpp<>nil then
     fpp.Free;
 
+  if context<>nil then
+    freememandnil(context);
+
   saveformposition(self);
 end;
 
 procedure TFormFoundCodeListExtra.FormShow(Sender: TObject);
 begin
+
   panel1.Font.Height:=GetFontData(font.reference.Handle).Height-5;
   pnlRegisters.Font.Height:=panel1.Font.Height;
 
@@ -261,45 +259,8 @@ begin
 end;
 
 procedure TFormFoundCodeListExtra.Panel6Resize(Sender: TObject);
-var maxrightwidth: integer;
 begin
-  {maxrightwidth:=lblRBP.width;
-  maxrightwidth:=max(maxrightwidth, lblRSP.Width);
-  maxrightwidth:=max(maxrightwidth, lblRIP.Width);
-  if lblR10<>nil then
-  begin
-    maxrightwidth:=max(maxrightwidth, lblR10.Width);
-    maxrightwidth:=max(maxrightwidth, lblR13.Width);
-  end;
 
-  lblRBP.Left:=(panel6.ClientWidth-sbShowFloats.width)-maxrightwidth-lblRAX.Left;
-  lblRSP.left:=lblRBP.left;
-  lblRIP.Left:=lblRBP.Left;
-
-  lblRDX.Left:=((panel6.ClientWidth-sbShowFloats.width) div 2)-(lblRDX.Width div 2);
-  lblRSI.left:=lblRDX.left;
-  lblRDI.Left:=lblRDX.left;
-
-  if lblR8<>nil then
-  begin
-    lblR9.left:=lblRDX.left;
-    lblR12.Left:=lblRDX.Left;
-    lblR15.Left:=lblRDX.Left;
-
-    lblR10.left:=lblRBP.left;
-    lblR13.left:=lblRBP.left;
-  end;
-
-
-  sbShowFloats.top:=lblRSP.Top+(lblRSP.height div 2)-(sbShowFloats.height);
-  sbShowFloats.Left:=panel6.ClientWidth-sbShowFloats.Width;
-
-  sbShowstack.top:=lblRSP.Top+(lblRSP.height div 2);
-  sbShowstack.left:=sbShowFloats.left;
-
-  label18.top:=panel6.clientheight-label18.height;
-
-         }
 end;
 
 procedure TFormFoundCodeListExtra.sbShowStackClick(Sender: TObject);
@@ -320,7 +281,7 @@ begin
 
   fpp.Left:=self.left+self.Width;
   fpp.Top:=self.top;
-  fpp.SetContextPointer(@context);
+  fpp.SetContextPointer(context);
   fpp.show;//pop to foreground
 end;
 

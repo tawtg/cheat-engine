@@ -543,10 +543,10 @@ crSizeAll     = -22
   clActiveCaption           = SYS_COLOR_BASE|COLOR_ACTIVECAPTION
   clInactiveCaption         = SYS_COLOR_BASE|COLOR_INACTIVECAPTION
   clMenu                    = SYS_COLOR_BASE|COLOR_MENU
-  clWindow                  = SYS_COLOR_BASE|COLOR_WINDOW
+if not clWindow then clWindow = SYS_COLOR_BASE|COLOR_WINDOW end
   clWindowFrame             = SYS_COLOR_BASE|COLOR_WINDOWFRAME
   clMenuText                = SYS_COLOR_BASE|COLOR_MENUTEXT
-  clWindowText              = SYS_COLOR_BASE|COLOR_WINDOWTEXT
+if not clWindowText then clWindowText = SYS_COLOR_BASE|COLOR_WINDOWTEXT end
   clCaptionText             = SYS_COLOR_BASE|COLOR_CAPTIONTEXT
   clActiveBorder            = SYS_COLOR_BASE|COLOR_ACTIVEBORDER
   clInactiveBorder          = SYS_COLOR_BASE|COLOR_INACTIVEBORDER
@@ -582,3 +582,28 @@ crSizeAll     = -22
 
   clMask = clWhite
   clDontMask = clBlack
+
+
+--pen mode
+pmBlack=0
+pmWhite=1
+pmNop=2
+pmNot=3
+pmCopy=4
+pmNotCopy=5
+pmMergePenNot=6
+pmMaskPenNot=7
+pmMergeNotPen=8
+pmMaskNotPen=9
+pmMerge=10
+pmNotMerge=11
+pmMask=12
+pmNotMask=13
+pmXor=14
+pmNotXor=15
+
+tbpsNone=0
+tbpsIndeterminate=1
+tbpsNormal=2
+tbpsError=3
+tbpsPaused=4

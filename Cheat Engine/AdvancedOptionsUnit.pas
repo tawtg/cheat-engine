@@ -17,7 +17,9 @@ uses
 
   symbolhandler,symbolhandlerstructs,LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
   Dialogs, StdCtrls, Buttons,CEDebugger, Menus,CEFuncProc, ExtCtrls,disassembler,
-  SyncObjs,registry, ComCtrls, LResources,NewKernelHandler{$ifdef windows},win32proc{$endif};
+  SyncObjs,registry, ComCtrls, LResources,NewKernelHandler{$ifdef windows},win32proc{$endif},
+  DPIHelper,
+  betterControls;
 
 
 
@@ -25,7 +27,9 @@ type
 
   { TAdvancedOptions }
 
-  TCodeRecord=class
+  EAdvancedOptionsDuplicateException=class(Exception);
+
+  TAdvancedOptionsCodeRecord=class
   private
   public
     before: array of byte;
@@ -38,7 +42,7 @@ type
   TCodeListEntry=class
   private
   public
-    code: TCodeRecord; //nil if header
+    code: TAdvancedOptionsCodeRecord; //nil if header
 
     color: TColor;
     constructor create;
@@ -48,6 +52,7 @@ type
   TAdvancedOptions = class(TForm)
     aoImageList: TImageList;
     ColorDialog1: TColorDialog;
+    MenuItem1: TMenuItem;
     miNewGroup: TMenuItem;
     miSetColor: TMenuItem;
     N4: TMenuItem;
@@ -123,7 +128,7 @@ type
 
     procedure hotkey(var Message: TMessage); {$ifdef windows}message WM_HOTKEY;{$endif}
     function getCount: integer;
-    function getCode(index: integer): TCodeRecord;
+    function getCode(index: integer): TAdvancedOptionsCodeRecord;
     function getEntry(index: integer): TCodeListEntry;
     function getSelected(index: integer): boolean;
     procedure setSelected(index: integer; state: boolean);
@@ -138,7 +143,7 @@ type
 
   published
     property count: integer read getCount;
-    property code[index: integer]: TCodeRecord read getCode;  //todo: change to code later
+    property code[index: integer]: TAdvancedOptionsCodeRecord read getCode;  //todo: change to code later
     property entries[index: integer]: TCodeListEntry read getEntry;  //todo: change to code later
     property selected[index: integer]: boolean read getSelected write setSelected;
     property CodeList2: TListView read lvCodelist; //backward compatibility
@@ -178,6 +183,7 @@ uses MainUnit, MemoryBrowserFormUnit,
 resourcestring
   stralreadyinthelist = 'This byte is already part of another opcode already present in the list';
   strPartOfOpcodeInTheList='At least one of these bytes is already in the list';
+  strAddAnyhow='Add anyhow? (It will break restore and undo if overlapping entries get modified)';
   strAddressAlreadyInTheList='This address is already in the list';
   strCECode='Code:';
   strNameCECode='What name do you want to give this code?';
@@ -226,7 +232,7 @@ begin
   result:=lvCodelist.Items.Count;
 end;
 
-function TAdvancedOptions.getCode(index: integer): TCodeRecord;
+function TAdvancedOptions.getCode(index: integer): TAdvancedOptionsCodeRecord;
 begin
   result:=nil;
   if entries[index]=nil then exit;
@@ -282,6 +288,8 @@ var i: integer;
     li: tlistitem;
 
     e: TCodeListEntry;
+
+    msg: string;
 begin
   //check if the address is already in the list
 
@@ -308,12 +316,27 @@ begin
       startb:=address;
       stopb:=address+sizeofopcode-1;
 
-      if ((starta>startb) and (starta<stopb)) or
-         ((startb>starta) and (startb<stopa)) then
+
+
+      if ((starta>=startb) and (starta<stopb)) or
+         ((startb>=starta) and (startb<stopa)) then
+      begin
         if sizeofopcode=1 then
-          raise exception.Create(stralreadyinthelist)
+          msg:=stralreadyinthelist
         else
-          raise exception.Create(strPartOfOpcodeInTheList);
+          msg:=strPartOfOpcodeInTheList;
+
+
+
+        if MainThreadID=GetCurrentThreadId then
+        begin
+          msg:=msg+#13#10+strAddAnyhow;
+          if MessageDlg(msg,mtError,[mbyes,mbno],0)<>mryes then exit(false);
+        end
+        else
+          raise EAdvancedOptionsDuplicateException.Create(msg);
+
+      end;
     end;
   end;
 
@@ -349,7 +372,7 @@ begin
   bread:=0;
   toread:=5;
   toread2:=5;
-  e.code:=TCodeRecord.Create;
+  e.code:=TAdvancedOptionsCodeRecord.Create;
 
   while bread<toread do
   begin
@@ -605,11 +628,14 @@ begin
 end;
 
 procedure TAdvancedOptions.miSetColorClick(Sender: TObject);
-var i: integer;
+var
+  i: integer;
+  cle: TCodeListEntry;
 begin
   if lvCodelist.Selected=nil then exit;
 
-  colordialog1.color:=TCodeListEntry(lvCodelist.selected.Data).color;
+  cle:=TCodeListEntry(lvCodelist.selected.Data);
+  colordialog1.color:=cle.color;
   if colordialog1.execute then
   begin
     for i:=0 to count-1 do
@@ -651,13 +677,11 @@ begin
   begin
     miReplaceWithNops.enabled:=false;
     miRestoreWithOriginal.enabled:=false;
-    rename1.enabled:=false;
-    remove1.enabled:=false;
+    rename1.enabled:=not ((count=0) or (lvCodelist.ItemIndex=-1));
+    remove1.enabled:=not ((count=0) or (lvCodelist.ItemIndex=-1));
     Openthedisassemblerhere1.enabled:=false;
     Findoutwhatthiscodechanges1.enabled:=false;
     Replaceall1.enabled:=false;
-
-
   end else
   begin
     rename1.enabled:=true;
@@ -723,7 +747,7 @@ begin
     end;
   end;
 
-  miDBVMFindWhatCodeAccesses.Enabled:={$ifdef windows}isIntel and isDBVMCapable and Findoutwhatthiscodechanges1.enabled{$else}false{$endif};
+  miDBVMFindWhatCodeAccesses.Enabled:={$ifdef windows}isDBVMCapable and Findoutwhatthiscodechanges1.enabled{$else}false{$endif};
   miDBVMFindWhatCodeAccesses.Caption:='DBVM '+Findoutwhatthiscodechanges1.Caption;
 
   //OutputDebugString('popupmenu2');
@@ -791,21 +815,35 @@ begin
 
 
     //set to read and write
-    vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(Address),length(code[i].actualopcode),PAGE_EXECUTE_READWRITE,original);  //I want to execute this, read it and write it. (so, full access)
-
-    //write
-    written:=0;
-    writeprocessmemory(processhandle,pointer(Address),@code[i].actualopcode[0],length(code[i].actualopcode),written);
-    if written<>lengthactualopcode then
+    if SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx then
+      vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(Address),length(code[i].actualopcode),PAGE_EXECUTE_READWRITE,original)  //I want to execute this, read it and write it. (so, full access)
+    else
     begin
-      messagedlg(strCouldntrestorecode,mtWarning,[MBok],0);
-      if vpe then
-        VirtualProtectEx(processhandle,pointer(Address),lengthactualopcode,original,x);
-      exit;
+      ntsuspendProcess(processhandle);
+      vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(Address),length(code[i].actualopcode),PAGE_READWRITE,original)
     end;
 
-    //set back
-    if vpe then VirtualProtectEx(processhandle,pointer(Address),lengthactualopcode,original,x);
+    try
+      //write
+      written:=0;
+      writeprocessmemory(processhandle,pointer(Address),@code[i].actualopcode[0],length(code[i].actualopcode),written);
+      if written<>lengthactualopcode then
+      begin
+        messagedlg(strCouldntrestorecode,mtWarning,[MBok],0);
+        if vpe then
+          VirtualProtectEx(processhandle,pointer(Address),lengthactualopcode,original,x);
+        exit;
+      end;
+
+      //set back
+      if vpe then VirtualProtectEx(processhandle,pointer(Address),lengthactualopcode,original,x);
+
+    finally
+      if not (SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx) then
+        ntresumeProcess(processhandle);
+    end;
+
+
 
     {$ifdef windows}
     FlushInstructionCache(processhandle,pointer(Address),lengthactualopcode);
@@ -871,19 +909,31 @@ begin
       nops[i]:=$90;  // $90=nop
 
    // get old security and set new security
-    vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(a),codelength,PAGE_EXECUTE_READWRITE,original);  //I want to execute this, read it and write it. (so, full access)
-
-    writeprocessmemory(processhandle,pointer(a),@nops[0],codelength,written);
-    if written<>dword(codelength) then
+    if SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx then
+      vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(a),codelength,PAGE_EXECUTE_READWRITE,original)  //I want to execute this, read it and write it. (so, full access)
+    else
     begin
-      messagedlg(strcouldntwrite,mtError,[mbok],0);
-      exit;
+      ntsuspendProcess(processhandle);
+      vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(a),codelength,PAGE_READWRITE,original);
     end;
 
+    try
+      writeprocessmemory(processhandle,pointer(a),@nops[0],codelength,written);
+      if written<>dword(codelength) then
+      begin
+        messagedlg(strcouldntwrite,mtError,[mbok],0);
+        exit;
+      end;
 
-    //set old security back
-    if vpe then
-      VirtualProtectEx(processhandle,pointer(a),codelength,original,original);  //ignore a
+
+      //set old security back
+      if vpe then
+        VirtualProtectEx(processhandle,pointer(a),codelength,original,original);  //ignore a
+
+    finally
+      if not (SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx) then
+        ntresumeProcess(processhandle);
+    end;
 
     {$ifdef windows}
     FlushInstructionCache(processhandle,pointer(a),codelength);
@@ -907,7 +957,12 @@ begin
   end
   else
   begin
-    if dialogs.messagedlg(rsDelete+' '+lvCodelist.selected.SubItems[0]+' ?', mtConfirmation, [mbyes, mbno], 0) <> mryes then exit;
+    if lvCodelist.selected.SubItems.count=0 then
+    begin
+      if dialogs.messagedlg(rsDelete+' '+lvCodelist.selected.caption+' ?', mtConfirmation, [mbyes, mbno], 0) <> mryes then exit;
+    end
+    else
+      if dialogs.messagedlg(rsDelete+' '+lvCodelist.selected.SubItems[0]+' ?', mtConfirmation, [mbyes, mbno], 0) <> mryes then exit;
   end;
 
   lvCodelist.Items.BeginUpdate;
@@ -943,7 +998,13 @@ procedure TAdvancedOptions.Rename1Click(Sender: TObject);
 var index: integer;
 begin
   index:=lvCodelist.ItemIndex;
-  lvCodelist.Items[index].SubItems[0]:=inputbox(rsNewName, rsGiveTheNewNameOfThisEntry, lvCodelist.Items[index].SubItems[0]);
+  if index<>-1 then
+  begin
+    if TCodeListEntry(lvCodelist.Items[index].Data).code=nil then
+      lvCodelist.Items[index].caption:=inputbox(rsNewName, rsGiveTheNewNameOfThisEntry, lvCodelist.Items[index].Caption)
+    else
+      lvCodelist.Items[index].SubItems[0]:=inputbox(rsNewName, rsGiveTheNewNameOfThisEntry, lvCodelist.Items[index].SubItems[0]);
+  end;
 end;
 
 procedure TAdvancedOptions.Findthiscodeinsideabinaryfile1Click(
@@ -969,7 +1030,7 @@ var i: integer;
     down: boolean;
     x: dword;
 begin
-  {$ifdef windows}
+
   down:=pausebutton.down;
   if down=oldpausestate then exit;
 
@@ -989,17 +1050,19 @@ begin
         exit;
       end;
 
-      if (assigned(ntsuspendprocess)) then
+      {$ifdef windows}if (assigned(ntsuspendprocess)) then {$endif}
       begin
        // OutputDebugString('Calling ntsuspendProcess');
         if IsValidHandle(processhandle) then
         begin
           x:=ntsuspendProcess(processhandle);
+          {$ifdef windows}
           if (x<>0) and (DBKLoaded) then DBKSuspendProcess(processid);
+          {$endif}
         end
-        else
+        {$ifdef windows}   else
           if DBKLoaded then
-            DBKSuspendProcess(processid);
+            DBKSuspendProcess(processid){$endif}   ;
       end;
 
        pausebutton.Hint:=rsResumeTheGame+pausehotkeystring;
@@ -1015,29 +1078,31 @@ begin
     if (not down) then
     begin
       //resume
-      if assigned(ntresumeprocess) then
+      {$ifdef windows}if assigned(ntresumeprocess) then{$endif}
       begin
         if IsValidHandle(processhandle) then
         begin
           x:=ntresumeprocess(processhandle);
+           {$ifdef windows}
           if (x<>0) and (DBKLoaded) then DBKResumeProcess(processid);
-        end
+           {$endif}
+        end {$ifdef windows}
         else
           if DBKLoaded then
-            DBKResumeProcess(processid);
+            DBKResumeProcess(processid){$endif};
       end;
 
       pausebutton.Hint:=rsPauseTheGame+pausehotkeystring;
 
       timer1.Enabled:=false;
-      mainform.ProcessLabel.Font.Color:=clMenuText;
+      mainform.ProcessLabel.Font.Color:=clWindowtext;
       mainform.ProcessLabel.Caption:=plabel;
     end;
 
   finally
     oldpausestate:=pausebutton.down;
   end;
-   {$endif}
+
 end;
 
 procedure TAdvancedOptions.PausebuttonMouseMove(Sender: TObject;
@@ -1091,21 +1156,30 @@ begin
     for i:=0 to codelength-1 do
       nops[i]:=$90;  //  $90=nop
 
-   // get old security and set new security
-    vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(a),codelength,PAGE_EXECUTE_READWRITE,original);  //I want to execute this, read it and write it. (so, full access)
-
-    writeprocessmemory(processhandle,pointer(a),@nops[0],codelength,written);
-    if written<>dword(codelength) then
+    // get old security and set new security
+    if SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx then
+      vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(a),codelength,PAGE_EXECUTE_READWRITE,original)  //I want to execute this, read it and write it. (so, full access)
+    else
     begin
-      messagedlg(rsTheMemoryAtThisAddressCouldnTBeWritten, mtError, [mbok], 0);
-      exit;
+      ntSuspendProcess(processhandle);
+      vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,pointer(a),codelength,PAGE_READWRITE,original)
     end;
+    try
+      writeprocessmemory(processhandle,pointer(a),@nops[0],codelength,written);
+      if written<>dword(codelength) then
+      begin
+        messagedlg(rsTheMemoryAtThisAddressCouldnTBeWritten, mtError, [mbok], 0);
+        exit;
+      end;
 
 
-    //set old security back
-    if vpe then
-      VirtualProtectEx(processhandle,pointer(a),codelength,original,original);  //ignore a
-
+      //set old security back
+      if vpe then
+        VirtualProtectEx(processhandle,pointer(a),codelength,original,original);  //ignore a
+    finally
+      if not (SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx) then
+        ntResumeProcess(processhandle);
+    end;
     {$ifdef windows}
     FlushInstructionCache(processhandle,pointer(a),codelength);
     {$endif}
@@ -1132,7 +1206,7 @@ end;
 resourcestring
   StrSelectExeFor3D='Select the executable of the Direct-3D game';
   rsAOErrorWhileTryingToCreateTheSharedKeyStructureEtc = 'Error while trying to create the shared key structure! (Which efficiently renders this whole feature useless)';
-  rsAOCheatEngineFailedToGetIntoTheConfigOfSelectedProgram = 'Cheat Engine failed to get into the config of the selected program.';
+  rsAOCheatEngineFailedToGetIntoTheConfigOfSelectedProgram = strCheatEngine+' failed to get into the config of the selected program.';
   rsAOYouCanOnlyLoadExeFiles = 'You can only load EXE files';
 
 procedure TAdvancedOptions.Button4Click(Sender: TObject);
@@ -1144,19 +1218,20 @@ procedure TAdvancedOptions.FormCreate(Sender: TObject);
 var x: array of integer;
 begin
   {$ifdef windows}
-  {$ifdef cpu64}
+  {$ifdef cpux64}
     //lazarus bug bypass
     if WindowsVersion=wvVista then
       lvCodelist.OnCustomDrawItem:=nil;
   {$endif}
-  {$else}
-  Pausebutton.visible:=false;
   {$endif}
+
 
  // pausebutton.Left:=savebutton.Left;
 
   setlength(x,0);
   loadedFormPosition:=loadformposition(self,x);
+
+  DPIHelper.AdjustSpeedButtonSize(Pausebutton);
 end;
 
 procedure TAdvancedOptions.Button2Click(Sender: TObject);

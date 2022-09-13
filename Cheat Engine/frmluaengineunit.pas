@@ -16,7 +16,7 @@ uses
   lauxlib, lualib, LuaSyntax, luahandler, CEFuncProc, sqldb, strutils,
   InterfaceBase, ComCtrls, SynGutterBase, SynEditMarks, PopupNotifier, ActnList,
   SynEditHighlighter, AvgLvlTree, math, LazFileUtils, Types, LCLType,
-  pluginexports, SynEditKeyCmds;
+  pluginexports, SynEditKeyCmds, betterControls;
 
 type
 
@@ -146,8 +146,8 @@ implementation
 
 { TfrmLuaEngine }
 
-uses LuaClass, SynEditTypes, globals, DPIHelper, frmSyntaxHighlighterEditor,
-  frmautoinjectunit;
+uses LuaClass, SynPluginMultiCaret, SynEditTypes, globals, DPIHelper, frmSyntaxHighlighterEditor,
+  frmautoinjectunit, mainunit2, TypInfo;
 
 resourcestring
   rsError = 'Script Error';
@@ -243,7 +243,7 @@ var
 
   r: string;
 begin
-  identchars:=['.','a'..'z','A'..'Z','0'..'9','_'];
+  identchars:=['.','a'..'z','A'..'Z','0'..'9','_','[',']'];
 
   extra:='';
   if s='' then exit('');
@@ -287,6 +287,8 @@ var
   c: TComponent absolute o;
 
   f: boolean;
+
+  pp: pproplist;
 begin
 
   scLuaCompleter.ItemList.Clear;
@@ -382,11 +384,15 @@ begin
                     properties.Add(c.Components[i].Name);
                 end;
 
-              temp:=ce_getPropertylist(o);
-              if temp<>nil then
-                properties.AddStrings(temp);
+              pp:=nil;
+              i:=GetPropList(c, pp);
+              if i>0 then
+                for j:=0 to i-1 do
+                  properties.Add(pp^[j].Name);
 
-              temp.free;
+              if pp<>nil then
+                freememandnil(pp);
+
             end;
 
             LUA_TTABLE:
@@ -427,6 +433,11 @@ begin
 
                 lua_pop(L,1);
               end;
+            end;
+
+            else
+            begin
+              outputdebugstring(pchar('unknown lua type: '+inttostr(lua_type(L, -1))));
             end;
 
           end;
@@ -602,6 +613,13 @@ begin
     begin
       if (name=token) then
       begin
+        if lua_isnil(Luavm,-1) then
+        begin
+          lua_pop(LuaVM,1);
+          inc(i);
+          continue;
+        end;
+
         result:=true;
         break;   //leave the value on the stack
       end
@@ -894,10 +912,6 @@ begin
         exit;
       end;
 
-
-
-
-
       if hintwindow=nil then
         hintwindow:=THintWindow.Create(self);
 
@@ -1136,7 +1150,10 @@ var pc: pchar;
 begin
   i:=lua_gettop(Luavm);
   if i>0 then
+  begin
     OutputDebugString('luastack is not correct');
+    lua_settop(Luavm,0);
+  end;
 
   dodebug:=false;
 
@@ -1385,12 +1402,28 @@ var
   x: array of integer;
   fq: TFontQuality;
   i: integer;
+  multicaret: TSynPluginMultiCaret;
 begin
 
   synhighlighter:=TSynLuaSyn.Create(self);
   reloadHighlighterSettings;
 
   mscript.Highlighter:=synhighlighter;
+
+  multicaret:=TSynPluginMultiCaret.Create(mscript);
+  multicaret.EnableWithColumnSelection:=true;
+  multicaret.DefaultMode:=mcmMoveAllCarets;
+  multicaret.DefaultColumnSelectMode:=mcmCancelOnCaretMove;
+
+  //set the default colors
+  mscript.Color:=colorset.TextBackground;
+  mscript.Font.color:=colorset.FontColor;
+  mscript.Gutter.Color:=clBtnFace;
+  mscript.Gutter.LineNumberPart.MarkupInfo.Background:=clBtnFace;
+  mscript.Gutter.SeparatorPart.MarkupInfo.Background:=clBtnFace;
+
+  mscript.LineHighlightColor.Background:=ColorToRGB(mscript.Color) xor $212121;
+
 
   fq:=mscript.Font.Quality;
   if not (fq in [fqCleartypeNatural, fqDefault]) then
@@ -1429,8 +1462,12 @@ begin
 
   MenuItem3.ShortCutKey2:=TextToShortCut('Meta+S');
 
+  MenuItem11.ShortCut:=TextToShortCut('Meta+N');
+  MenuItem2.ShortCut:=TextToShortCut('Meta+O');
+  MenuItem3.ShortCut:=TextToShortCut('Meta+S');
+  miSaveCurrentScriptAs.ShortCut:=TextToShortCut('Meta+Alt+S');
 
-  {$endif}
+   {$endif}
 end;
 
 procedure TfrmLuaEngine.FormDestroy(Sender: TObject);
@@ -1509,7 +1546,7 @@ end;
 
 procedure TfrmLuaEngine.reloadHighlighterSettings;
 begin
-  synhighlighter.LoadFromRegistry(HKEY_CURRENT_USER, '\Software\Cheat Engine\Lua Highlighter');
+  synhighlighter.LoadFromRegistry(HKEY_CURRENT_USER, '\Software\'+strCheatEngine+'\Lua Highlighter'+darkmodestring);
 end;
 
 procedure TfrmLuaEngine.MenuItem15Click(Sender: TObject);
@@ -1517,11 +1554,11 @@ var
   frmHighlighterEditor: TfrmHighlighterEditor;
 begin
   frmHighlighterEditor:=TfrmHighlighterEditor.create(self);
-  synhighlighter.LoadFromRegistry(HKEY_CURRENT_USER, '\Software\Cheat Engine\Lua Highlighter');
+  synhighlighter.LoadFromRegistry(HKEY_CURRENT_USER, '\Software\'+strCheatEngine+'\Lua Highlighter'+darkmodestring);
   frmHighlighterEditor.highlighter:=synhighlighter;
   if frmHighlighterEditor.showmodal=mrok then
   begin
-    synhighlighter.SaveToRegistry(HKEY_CURRENT_USER, '\Software\Cheat Engine\Lua Highlighter');
+    synhighlighter.SaveToRegistry(HKEY_CURRENT_USER, '\Software\'+strCheatEngine+'\Lua Highlighter'+darkmodestring);
     ReloadAllAutoInjectHighlighters; //AA uses lua too
     ReloadAllLuaEngineHighlighters;
   end;
@@ -1599,7 +1636,7 @@ begin
   if savedialog1.Execute then
   begin
     mscript.lines.SaveToFile(savedialog1.filename);
-    frmLuaEngine.Caption:=rsLuaEngine+' '+ExtractFileNameOnly(savedialog1.filename);
+    Caption:=rsLuaEngine+' '+ExtractFileNameOnly(savedialog1.filename);
   end;
 end;
 
@@ -1757,7 +1794,10 @@ end;
 
 procedure TfrmLuaEngine.mScriptShowHint(Sender: TObject; HintInfo: PHintInfo);
 begin
+  asm
+  nop
 
+  end;
 end;
 
 

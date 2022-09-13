@@ -286,15 +286,17 @@ int getDBVMVersion(void)
 {
   int result;
   VMCALL_BASIC param;
-  sendstringf("getDBVMVersion");
+//  sendstringf("getDBVMVersion\n");
 
   param.command=VMCALL_GETVERSION;
   param.password2=Password2;
   param.size=sizeof(param);
 
+  result=0;
+
   try
   {
-    result=_vmcall(Password1,&param);
+    result=_vmcall(&param);
   }
   except
   {
@@ -321,7 +323,7 @@ int dbvm_watch_writes(QWORD PhysicalAddress, int *ID)
 
   try
   {
-    result=_vmcall(Password1, &param);
+    result=_vmcall(&param);
     *ID=param.ID;
   }
   except
@@ -349,7 +351,7 @@ int dbvm_watch_reads(QWORD PhysicalAddress, int *ID)
 
   try
   {
-    result=_vmcall(Password1, &param);
+    result=_vmcall(&param);
     *ID=param.ID;
   }
   except
@@ -377,7 +379,7 @@ int dbvm_watch_executes(QWORD PhysicalAddress, int *ID)
 
   try
   {
-    result=_vmcall(Password1, &param);
+    result=_vmcall(&param);
     *ID=param.ID;
   }
   except
@@ -405,7 +407,7 @@ int dbvm_watch_retrievelog(int watchid, void* result, int *size)
 
   try
   {
-    r=_vmcall(Password1, &param);
+    r=_vmcall(&param);
     *size=param.resultsize;
   }
   except
@@ -429,7 +431,7 @@ int dbvm_watch_delete(int id)
 
   try
   {
-    r=_vmcall(Password1, &param);
+    r=_vmcall(&param);
   }
   except
   {
@@ -454,7 +456,7 @@ int dbvm_cloak_activate(QWORD physicalAddress, int mode)
   int r;
   try
   {
-    r=_vmcall(Password1, &param);
+    r=_vmcall(&param);
   }
   except
   {
@@ -477,7 +479,7 @@ int dbvm_cloak_deactivate(QWORD PhysicalAddress)
   int r;
   try
   {
-    r=_vmcall(Password1, &param);
+    r=_vmcall(&param);
   }
   except
   {
@@ -503,7 +505,7 @@ int dbvm_cloak_readExecutable(QWORD PhysicalAddress, void *destination)
   int r;
   try
   {
-    r=_vmcall(Password1, &param);
+    r=_vmcall(&param);
   }
   except
   {
@@ -528,7 +530,7 @@ int dbvm_cloak_writeExecutable(QWORD PhysicalAddress, void *source)
   int r;
   try
   {
-    r=_vmcall(Password1, &param);
+    r=_vmcall(&param);
   }
   except
   {

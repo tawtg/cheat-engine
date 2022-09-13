@@ -37,7 +37,7 @@ var
 implementation
 
 uses syncobjs, CEFuncProc, commonTypeDefs, maps, registry,
-  frmExceptionRegionListUnit, frmExceptionIgnoreListUnit;
+  frmExceptionRegionListUnit, frmExceptionIgnoreListUnit, mainunit2;
 
 var
   UnexpectedExceptionListCS: TCriticalsection;
@@ -204,15 +204,18 @@ var
 begin
   reg:=Tregistry.Create;
   try
-    if reg.OpenKey('\Software\Cheat Engine\Ignored Exceptions\',true) then
+    if reg.OpenKey('\Software\'+strCheatEngine+'\Ignored Exceptions\',true) then
     begin
       try
         l:=tstringlist.create;
 
-        reg.GetValueNames(l);
+        try
+          reg.GetValueNames(l);
 
-        for i:=0 to l.count-1 do
-          reg.DeleteValue(l[i]);
+          for i:=0 to l.count-1 do
+            reg.DeleteValue(l[i]);
+        except
+        end;
 
         l.clear;
 
@@ -242,7 +245,7 @@ begin
   {$endif}
   reg:=Tregistry.Create;
   try
-    if reg.OpenKey('\Software\Cheat Engine\Ignored Exceptions\',false) then
+    if reg.OpenKey('\Software\'+strCheatEngine+'\Ignored Exceptions\',false) then
     begin
       l:=tstringlist.create;
 

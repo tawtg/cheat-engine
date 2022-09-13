@@ -10,8 +10,9 @@ uses
   Dialogs, ComCtrls, StdCtrls, ExtCtrls, Buttons, Menus, JvDesignSurface,
   JvDesignImp, JvDesignUtils, typinfo, PropEdits, ObjectInspector, LResources,
   maps, ExtDlgs, PopupNotifier, IDEDialogs, ceguicomponents, LMessages, luacaller,
-  luahandler, cefuncproc, ListViewPropEdit, TreeViewPropEdit, AnchorEditor,
-  LCLType, GraphicPropEdit, GraphPropEdits, registry, math, LCLVersion;
+  luahandler, cefuncproc, ListViewPropEdit, TreeViewPropEdit,
+  LCLType, GraphicPropEdit, GraphPropEdits, registry, math, LCLVersion,
+  frmAnchorEditor, betterControls;
 
 
 
@@ -78,6 +79,7 @@ type
     RadioButton: TToolButton;
     ScrollBox: TToolButton;
     CheckListBox: TToolButton;
+    CECustomButton: TToolButton;
     ToolButton6: TToolButton;
     CEImage: TToolButton;
     procedure controlPopupPopup(Sender: TObject);
@@ -123,8 +125,6 @@ type
 
     ComponentTreeWindowProc: TWndMethod;
 
-    //anchorEditor: TAnchorDesigner;
-
     ObjectInspectorSelectionChangeCount: integer;
     DesignerSelectionChangeCount: integer;
 
@@ -134,6 +134,8 @@ type
     function MethodExists(const Name: String; TypeData: PTypeData; var MethodIsCompatible,MethodIsPublished,IdentIsMethod: boolean):boolean;
     function CompatibleMethodExists(const Name: String; InstProp: PInstProp; var MethodIsCompatible,MethodIsPublished,IdentIsMethod: boolean):boolean;
 
+    procedure OnObjectSelected(const ASelection: TPersistentSelectionList);
+    procedure OnObjectPropertyChanged(Sender: TObject);
     procedure OnComponentRenamed(AComponent: TComponent);
     procedure onRefreshPropertyValues;
     function onMethodFromLookupRoot(const Method:TMethod):boolean;
@@ -197,8 +199,7 @@ implementation
 
 { TFormDesigner }
 
-
-uses mainunit, DPIHelper{$if lcl_fullversion>=2000000}, LazMsgDialogs{$endif}, IDEImagesIntf;
+uses mainunit, DPIHelper,lazdialogs{$ifdef windows}, DwmApi, UxTheme{$endif}, mainunit2;
 
 resourcestring
   rsInvalidObject = '{Invalid object}';
@@ -278,73 +279,45 @@ begin
   TCEForm(GlobalDesignHook.LookupRoot).designsurface.Change;
 end;
 
+procedure TFormDesigner.OnObjectSelected(const ASelection: TPersistentSelectionList);
+begin
+  if AnchorEditor<>nil then
+    AnchorEditor.setselection(aselection);
+end;
+
+procedure TFormDesigner.OnObjectPropertyChanged(Sender: TObject);
+begin
+  if anchoreditor<>nil then
+    AnchorEditor.OnObjectPropertyChanged(sender);
+
+  if oid<>nil then
+    oid.RefreshPropertyValues;
+end;
+
 procedure TFormDesigner.miAnchorEditorClick(Sender: TObject);
 var defaultwidth: integer;
 begin
-  if AnchorDesigner=nil then
+  if AnchorEditor=nil then
   begin
-    AnchorDesigner:=TAnchorDesigner.Create(self);
+    GlobalDesignHook.AddHandlerSetSelection(OnObjectSelected);
+    GlobalDesignHook.AddHandlerModified(OnObjectPropertyChanged);
+
+    AnchorEditor:=TAnchorEditor.Create(self);
+
+
 
     //this this is the most dpi unaware window I've seen
-    with AnchorDesigner do
+    with AnchorEditor do
     begin
-      DPIHelper.AdjustSpeedButtonSize(LeftRefLeftSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(LeftRefCenterSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(LeftRefRightSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(RightRefLeftSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(RightRefCenterSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(RightRefRightSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(TopRefTopSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(TopRefCenterSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(TopRefBottomSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(BottomRefTopSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(BottomRefCenterSpeedButton);
-      DPIHelper.AdjustSpeedButtonSize(BottomRefBottomSpeedButton);
-
-      defaultWidth:=canvas.TextWidth('10    ');
-      DPIHelper.AdjustEditBoxSize(LeftBorderSpaceSpinEdit, defaultwidth);
-      DPIHelper.AdjustEditBoxSize(TopBorderSpaceSpinEdit, defaultwidth);
-      DPIHelper.AdjustEditBoxSize(RightBorderSpaceSpinEdit, defaultwidth);
-      DPIHelper.AdjustEditBoxSize(BottomBorderSpaceSpinEdit, defaultwidth);
-      DPIHelper.AdjustEditBoxSize(AroundBorderSpaceSpinEdit, defaultwidth);
-
-      BorderSpaceGroupBox.Width:=(AroundBorderSpaceSpinEdit.width+5)*3;
-      Constraints.MinWidth:=(BorderSpaceGroupBox.Width)*4;
-
-
-      IDEImages.AssignImage(LeftRefLeftSpeedButton, 'anchor_left_left');
-      IDEImages.AssignImage(LeftRefCenterSpeedButton, 'anchor_left_center');
-      IDEImages.AssignImage(LeftRefRightSpeedButton, 'anchor_left_right');
-      IDEImages.AssignImage(RightRefLeftSpeedButton, 'anchor_right_left');
-      IDEImages.AssignImage(RightRefCenterSpeedButton, 'anchor_right_center');
-      IDEImages.AssignImage(RightRefRightSpeedButton, 'anchor_right_right');
-      IDEImages.AssignImage(TopRefTopSpeedButton, 'anchor_top_top');
-      IDEImages.AssignImage(TopRefCenterSpeedButton, 'anchor_top_center');
-      IDEImages.AssignImage(TopRefBottomSpeedButton, 'anchor_top_bottom');
-      IDEImages.AssignImage(BottomRefTopSpeedButton, 'anchor_bottom_top');
-      IDEImages.AssignImage(BottomRefCenterSpeedButton, 'anchor_bottom_center');
-      IDEImages.AssignImage(BottomRefBottomSpeedButton, 'anchor_bottom_bottom');
-
       show;
 
       DoAutoSize;
 
-      TopGroupBox.left:=BorderSpaceGroupBox.left;
-      BottomGroupBox.Left:=BorderSpaceGroupBox.left;
-      TopGroupBox.width:=BorderSpaceGroupBox.Width;
-      BottomGroupBox.Width:=BorderSpaceGroupBox.Width;
-
-
-      Constraints.MinHeight:=trunc(TopGroupBox.Height*3.2);
-
-      if height<Constraints.MinHeight then
-        height:=Constraints.MinHeight;
-
-
     end;
+    AnchorEditor.setSelection(oid.Selection);
   end
   else
-    AnchorDesigner.Show;
+    AnchorEditor.Show;
 end;
 
 procedure TFormDesigner.miDeleteClick(Sender: TObject);
@@ -397,8 +370,8 @@ end;
 
 procedure TFormDesigner.miMenuMoveDownClick(Sender: TObject);
 var
-  mi: TMenuItem;
-  p: TMenuItem;
+  mi: menus.TMenuItem;
+  p: menus.TMenuItem;
   i: integer;
 begin
   mi:=TMenuItem(oid.selection[0]);
@@ -415,8 +388,13 @@ begin
       p.Delete(i);
       p.Insert(i+1, mi);
 
+
       TCEForm(GlobalDesignHook.LookupRoot).designsurface.Change;
+      {$if lcl_fullversion < 2020000}
       oid.ComponentTree.RebuildComponentNodes;
+      {$else}
+      oid.ComponentTree.BuildComponentNodes(true);
+      {$endif}
     end;
 
   end;
@@ -424,8 +402,8 @@ end;
 
 procedure TFormDesigner.miMenuMoveUpClick(Sender: TObject);
 var
-  mi: TMenuItem;
-  p: TMenuItem;
+  mi: menus.TMenuItem;
+  p: menus.TMenuItem;
   i: integer;
 begin
   mi:=TMenuItem(oid.selection[0]);
@@ -442,7 +420,11 @@ begin
       p.Insert(i-1, mi);
 
       TCEForm(GlobalDesignHook.LookupRoot).designsurface.Change;
+      {$if lcl_fullversion < 2020000}
       oid.ComponentTree.RebuildComponentNodes;
+      {$else}
+      oid.ComponentTree.BuildComponentNodes(true);
+      {$endif}
     end;
 
   end;
@@ -605,7 +587,11 @@ begin
   TCEform(GlobalDesignHook.LookupRoot).designsurface.UpdateDesigner;
 
 
+  {$if lcl_fullversion < 2020000}
   oid.ComponentTree.RebuildComponentNodes;
+  {$else}
+  oid.ComponentTree.BuildComponentNodes(true);
+  {$endif}
 
 end;
 
@@ -673,13 +659,14 @@ begin
   LazIDESelectDirectory:=IDESelectDirectory;
   idedialogs.InitIDEFileDialog:=self.InitIDEFileDialog;
   idedialogs.StoreIDEFileDialog:=self.InitIDEFileDialog;
-  {$if lcl_fullversion>=2000000}
-  LazMsgDialogs.LazMessageDialog:=self.IDEMessageDialog;
+
+ { LazMsgDialogs.LazMessageDialog:=self.IDEMessageDialog;
   LazMsgDialogs.LazQuestionDialog:=self.IDEQuestionDialog;
-  {$else}
-  idedialogs.IDEMessageDialog:=self.IDEMessageDialog;
-  idedialogs.IDEQuestionDialog:=self.IDEQuestionDialog;
-  {$endif}
+
+  //todo: changed to  a class
+
+  }
+
 
   SurfaceList:=tlist.create;
 
@@ -733,8 +720,25 @@ begin
 end;
 
 procedure TFormDesigner.FormShow(Sender: TObject);
+var
+  w: integer;
+  i: integer;
 begin
-  dpihelper.AdjustToolbar(Toolbar1);
+  //dpihelper.AdjustToolbar(Toolbar1);
+  if loadedfromsave=false then
+  begin
+    w:=0;
+    for i:=0 to toolbar1.ButtonCount-1 do
+      inc(w, toolbar1.buttons[i].Width);
+
+    if screen.width<oid.width+10+w then
+      w:=screen.width-oid.width+10;
+
+    self.clientwidth:=w+2;
+  end;
+
+  toolbar1.ButtonHeight:=scaley(32, 96);
+
   self.clientheight:=max(toolbar1.height, toolbar1.ButtonHeight);
 end;
 
@@ -784,7 +788,7 @@ begin
             surface.Selector.AddToSelection(tcontrol(p));
         end;
 
-        if AnchorDesigner<>nil then
+        if AnchorEditor<>nil then
           GlobalDesignHook.SetSelection(oid.Selection);
           
         surface.onselectionchange:=designerSelectionChange;
@@ -862,8 +866,7 @@ begin
       oid.RefreshSelection;
     end;
 
-    if AnchorDesigner<>nil then
-      GlobalDesignHook.SetSelection(oid.Selection);
+    GlobalDesignHook.SetSelection(oid.Selection);
 
 
     //laz 2 not needed anymore. gets it from designhook
@@ -889,7 +892,12 @@ end;
 
 procedure TFormDesigner.surfaceOnChange(sender: tobject);
 begin
+  {$if lcl_fullversion < 2020000}
   oid.FillComponentList;
+  {$else}
+  oid.FillComponentList(true);
+  {$endif}
+
   oid.RefreshPropertyValues;
   oid.RefreshComponentTreeSelection;
 
@@ -1078,8 +1086,8 @@ begin
   if oid<>nil then
     FreeAndNil(oid);
 
-  if AnchorDesigner<>nil then
-    FreeAndNil(AnchorDesigner);
+  if AnchorEditor<>nil then
+    FreeAndNil(AnchorEditor);
 
   if GlobalDesignHook<>nil then
     FreeAndNil(GlobalDesignHook);
@@ -1143,10 +1151,10 @@ end;
 
 procedure TFormDesigner.SAD(sender: tobject);
 begin
-  if AnchorDesigner=nil then
-    AnchorDesigner:=TAnchorDesigner.create(self);
+  if AnchorEditor=nil then
+    AnchorEditor:=TAnchorEditor.create(self);
 
-  AnchorDesigner.show;
+  AnchorEditor.show;
 end;
 
 //{$define OLDLAZARUS11}
@@ -1167,13 +1175,43 @@ begin
   reg:=tregistry.create;
   try
     Reg.RootKey := HKEY_CURRENT_USER;
-    if Reg.OpenKey('\Software\Cheat Engine',true) then
+    if Reg.OpenKey('\Software\'+strCheatEngine,true) then
       reg.WriteBool('FormDesigner CheckboxForBoolean', oid.GridControl[oipgpProperties].CheckboxForBoolean);
   finally
     reg.free;
   end;
   {$endif}
 end;
+
+{$ifdef windows}
+
+procedure DarkenComponents(c: TComponent);
+var
+  i: integer;
+  wc: TWinControl;
+begin
+  if c is TPageControl then
+  begin
+    asm
+    nop
+    end;
+  end;
+
+  if c is twincontrol then
+  begin
+    wc:=twincontrol(c);
+    AllowDarkModeForWindow(wc.handle,1);
+    SetWindowTheme(wc.Handle, 'explorer', nil);
+
+    wc.Color:=clWindow;
+    wc.font.color:=clWindowtext;
+  end;
+
+  for i:=0 to c.ComponentCount-1 do
+    DarkenComponents(c.Components[i]);
+end;
+
+{$endif}
 
 procedure TFormDesigner.designForm(f: tceform);
 var x: array of integer;
@@ -1185,6 +1223,10 @@ var x: array of integer;
   reg: Tregistry;
   i: integer;
   dpmi: tmenuitem;
+  ldark: dword;
+
+  ip: TObjectInspectorPage;
+  wc: TWinControl;
 begin
 
   GlobalDesignHook.LookupRoot:=f;
@@ -1197,6 +1239,59 @@ begin
   if oid=nil then //no oid yet
   begin
     oid:=TObjectInspectorDlg.Create(self);
+    {$ifdef windows}
+    if ShouldAppsUseDarkMode then
+    begin
+      //force it into darkmode
+
+
+      with oid do
+      begin
+
+        AllowDarkModeForWindow(handle,1);
+
+        color:=$242424;
+        if font.color=clDefault then
+          font.color:=colorset.FontColor;
+
+        if InitDwmLibrary then
+        begin
+          ldark:=1;
+          DwmSetWindowAttribute(handle, 19, @Ldark, sizeof(Ldark));
+        end;
+
+
+
+
+        DarkenComponents(oid);
+
+        for ip:=oipgpProperties to oipgpRestricted do
+        begin
+          GridControl[ip].BackgroundColor:=clWindow;
+          GridControl[ip].GutterColor:=clWindow;
+          GridControl[ip].GutterEdgeColor:=clGray;
+          GridControl[ip].HighlightColor:=clGreen;
+
+          GridControl[ip].SubPropertiesColor:=clBlue;
+          GridControl[ip].ReadOnlyColor:=clGray;
+          GridControl[ip].NameFont.color:=clWindowtext;
+          GridControl[ip].DefaultValueFont.color:=clWindowtext;
+          GridControl[ip].ValueFont.color:=clWindowtext;
+          GridControl[ip].HighlightFont.color:=clAqua;
+
+          GridControl[ip].CheckboxForBoolean:=false;
+        end;
+
+        ComponentTree.BackgroundColor:=clWindow;
+        ComponentTree.ExpandSignColor:=clWindowtext;
+        ComponentTree.TreeLineColor:=clWindowtext;
+        ComponentTree.Font.color:=clWindowtext;
+
+        ComponentTree.options:=ComponentTree.options-[tvoThemedDraw];
+      end;
+    end;
+    {$endif}
+
     oid.AutoSize:=false;
     oid.PropertyEditorHook:=GlobalDesignHook; //needs to be created
     oid.ShowFavorites:=false;
@@ -1210,7 +1305,7 @@ begin
     reg:=tregistry.create;
     try
       Reg.RootKey := HKEY_CURRENT_USER;
-      if Reg.OpenKey('\Software\Cheat Engine',false) then
+      if Reg.OpenKey('\Software\'+strCheatEngine,false) then
       begin
         if reg.ValueExists('FormDesigner CheckboxForBoolean') then
           oid.GridControl[oipgpProperties].CheckboxForBoolean:=reg.ReadBool('FormDesigner CheckboxForBoolean')
@@ -1221,6 +1316,9 @@ begin
       reg.free;
     end;
 
+    if ShouldAppsUseDarkMode then
+      oid.PropertyGrid.CheckboxForBoolean:=false; //checkboxes are rendered themed and I have no control over these
+
     miChangeCheckboxSetting:=tmenuitem.create(oid.MainPopupMenu);
     miChangeCheckboxSetting.caption:=rsShowCheckboxesForBoolean;
     miChangeCheckboxSetting.checked:=oid.GridControl[oipgpProperties].CheckboxForBoolean;
@@ -1229,12 +1327,6 @@ begin
 
     oid.MainPopupMenu.Items.Add(miChangeCheckboxSetting);
     {$endif}
-
-//    AnchorDesigner:=TAnchorDesigner.Create(oid);
-
-
-    ShowAnchorDesigner:=SAD; //panda       (I wanted to call it ShowAnchorDesigner but that was causing 'issues')
-
 
     ComponentTreeWindowProc:=oid.ComponentTree.WindowProc;
 
@@ -1315,11 +1407,19 @@ begin
 
 
   TCEForm(GlobalDesignHook.LookupRoot).designsurface.Change;
+  {$if lcl_fullversion < 2020000}
   oid.ComponentTree.RebuildComponentNodes;
+  {$else}
+  oid.ComponentTree.BuildComponentNodes(true);
+  {$endif}
 
   oid.RefreshPropertyValues;
   oid.RebuildPropertyLists;
+  {$if lcl_fullversion < 2020000}
   oid.FillComponentList;
+  {$else}
+  oid.FillComponentList(true);
+  {$endif}
   oid.UpdateComponentValues;
 
 end;

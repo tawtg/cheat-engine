@@ -2,11 +2,12 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <AssemblyName>DotNetInterface</AssemblyName>
+    <AssemblyName>DotNetInterfaceOld</AssemblyName>
     <RootNamespace>DotNetInterface</RootNamespace>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
-    <Copyright>Cheat Engine</Copyright>    
+    <Copyright>Cheat Engine</Copyright>
+    <SignAssembly>true</SignAssembly>    
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -16,5 +17,9 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
     <OutputPath>D:\git\cheat-engine\Cheat Engine\bin\autorun\dlls\</OutputPath>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\PipeServer.cs" Link="PipeServer.cs" />
+  </ItemGroup>
 
 </Project>

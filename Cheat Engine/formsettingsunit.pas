@@ -15,7 +15,7 @@ uses
   Buttons, LResources, frameHotkeyConfigUnit, math,
 
   KernelDebugger,plugin,NewKernelHandler,CEDebugger,hotkeyhandler, debugHelper,
-  formhotkeyunit, debuggertypedefinitions, FileUtil, IniFiles;
+  formhotkeyunit, debuggertypedefinitions, FileUtil, IniFiles, betterControls;
 
 
 type Tpathspecifier=class(TObject)
@@ -66,7 +66,6 @@ type
     cbVEHRealContextOnThreadCreation: TCheckBox;
     cbWaitAfterGuiUpdate: TCheckBox;
     cbWriteLoggingOn: TCheckBox;
-    cgAllTypes: TCheckGroup;
     CheckBox1: TCheckBox;
     cbOverrideDefaultFont: TCheckBox;
     cbDPIAware: TCheckBox;
@@ -82,6 +81,19 @@ type
     cbAllocsAddToWatchedRegions: TCheckBox;
     cbSkip_PAGE_WRITECOMBINE: TCheckBox;
     cbUseThreadForFreeze: TCheckBox;
+    cbAllByte: TCheckBox;
+    cbAllWord: TCheckBox;
+    cbAllDword: TCheckBox;
+    cbAllQword: TCheckBox;
+    cbAllSingle: TCheckBox;
+    cbAllDouble: TCheckBox;
+    cbAllCustom: TCheckBox;
+    cbDisableDarkModeSupport: TCheckBox;
+    cbDBVMDebugTriggerCOW: TCheckBox;
+    cbDBVMDebugTargetedProcessOnly: TCheckBox;
+    cbDBVMDebugKernelmodeBreaks: TCheckBox;
+    cbSaveMemoryregionScanSettings: TCheckBox;
+    cbSkipPDB: TCheckBox;
     combothreadpriority: TComboBox;
     defaultbuffer: TPopupMenu;
     Default1: TMenuItem;
@@ -102,6 +114,7 @@ type
     GroupBox4: TGroupBox;
     GroupBox5: TGroupBox;
     gbUnexpectedExceptionHandling: TGroupBox;
+    gbAllTypes: TGroupBox;
     Label1: TLabel;
     Label10: TLabel;
     Label11: TLabel;
@@ -145,11 +158,12 @@ type
     miUnexpectedBreakpointsIgnore: TRadioButton;
     miUnexpectedBreakpointsBreak: TRadioButton;
     miUnexpectedBreakpointsBreakWhenInsideRegion: TRadioButton;
+    cbUseDBVMDebugger: TRadioButton;
     rbMacDebugThreadLevel: TRadioButton;
     cbUseMacDebugger: TRadioButton;
     rbMacDebugTaskLevel: TRadioButton;
     rbDebugAsBreakpoint: TRadioButton;
-    rbgDebuggerInterface: TRadioGroup;
+    gbDebuggerInterface: TGroupBox;
     rbInt3AsBreakpoint: TRadioButton;
     rbPageExceptions: TRadioButton;
     rbVEHHookThreadCreation: TRadioButton;
@@ -163,6 +177,7 @@ type
     spbDown: TSpeedButton;
     spbUp: TSpeedButton;
     Languages: TTabSheet;
+    TabSheet1: TTabSheet;
     tsMacDebuggerInterface: TTabSheet;
     tsLua: TTabSheet;
     tsSigning: TTabSheet;
@@ -278,6 +293,8 @@ type
     procedure OpenButtonClick(Sender: TObject);
   private
     { Private declarations }
+    hasBeenShown: boolean;
+
     tempstatePopupHide:word;
     temppopupmodifier:dword;
     tempstatePause:word;
@@ -374,7 +391,7 @@ procedure TFormSettings.setNoteAboutDebuggerInterfaces;
 begin
   if hasNoteAboutDebuggerInterfaces=false then
   begin
-    rbgDebuggerInterface.caption:=rbgDebuggerInterface.caption+' '+ rsWontHaveAnyEffectUntilYouOpenANewProcess;
+    gbDebuggerInterface.caption:=gbDebuggerInterface.caption+' '+ rsWontHaveAnyEffectUntilYouOpenANewProcess;
     hasNoteAboutDebuggerInterfaces:=true;
   end;
 end;
@@ -387,7 +404,7 @@ end;
 
 resourcestring
   strProcessWatcherWillPreventUnloader='Enabling the process watcher will prevent the unloader from working';
-  rsYouHavenTSelectedAnyMemoryTypeThisWillResultInChea = 'You haven''t selected any memory type. This will result in Cheat Engine finding NO memory! Are you stupid?';
+  rsYouHavenTSelectedAnyMemoryTypeThisWillResultInChea = 'You haven''t selected any memory type. This will result in '+strCheatEngine+' finding NO memory! Are you stupid?';
   rsIsNotAValidInterval = '%s is not a valid interval';
   rsTheScanbufferSizeHasToBeGreaterThan0 = 'The scanbuffer size has to be greater than 0';
   rsTheValueForTheKeypollIntervalIsInvalid = 'the value for the keypoll interval (%s is invalid';
@@ -415,7 +432,7 @@ resourcestring
   rsSigning = 'Signing';
   rsNoName = 'No Name';
   rsAttachToForegroundProcess = 'Attach to current foreground process';
-  rsPopupHideCheatEngine = 'Popup/Hide cheat engine';
+  rsPopupHideCheatEngine = 'Popup/Hide '+strCheatEngine;
   rsPauseTheSelectedProcess = 'Pause the selected process';
   rsToggleTheSpeedhack = 'Toggle the speedhack';
   rsSpeedhackSpeed = 'Speedhack speed';
@@ -441,7 +458,7 @@ resourcestring
   rsChangedValue = 'Changed Value';
   rsUnchangedValue = 'Unchanged Value';
   rsNewLanguageSet = 'New language set';
-  rsRestartCE = 'It is recommended to restart Cheat Engine for this change to take effect';
+  rsRestartCE = 'It is recommended to restart '+strCheatEngine+' for this change to take effect';
   rsFailureToOpenRegistry = 'Failure to open the registry entry';
   rsSpectreWarning = 'WARNING! Making kernelmode possible will slightly increase the speed of your system, BUT it will make you vulnerable to Spectre attacks'#13#10'Are you ok with this? (You can later re-enable this protection)';
   rsSpectreRestore = 'Your protection has been restored. Please restart your '
@@ -539,7 +556,7 @@ begin
     reg:=Tregistry.Create;
     try
       Reg.RootKey := HKEY_CURRENT_USER;
-      if Reg.OpenKey('\Software\Cheat Engine',true) then
+      if Reg.OpenKey('\Software\'+strCheatEngine,true) then
       begin
         //write the settings
         reg.WriteInteger('Saved Stacksize', stacksize);
@@ -547,7 +564,7 @@ begin
         reg.writebool('Show processlist in mainmenu', cbShowProcesslist.checked);
         mainform.Process1.Visible:=cbShowProcesslist.checked;
 
-
+        reg.WriteBool('Disable DarkMode Support', cbDisableDarkModeSupport.checked);
         reg.WriteBool('Undo',cbshowundo.checked);
         reg.WriteInteger('ScanThreadpriority',combothreadpriority.itemindex);
         case combothreadpriority.itemindex of
@@ -573,21 +590,21 @@ begin
           Application.TaskBarBehavior:=tbSingleButton;
 
         ScanAllTypes:=[];
-        if cgAllTypes.checked[0] then ScanAllTypes:=ScanAllTypes+[vtByte];
-        if cgAllTypes.checked[1] then ScanAllTypes:=ScanAllTypes+[vtWord];
-        if cgAllTypes.checked[2] then ScanAllTypes:=ScanAllTypes+[vtDword];
-        if cgAllTypes.checked[3] then ScanAllTypes:=ScanAllTypes+[vtQword];
-        if cgAllTypes.checked[4] then ScanAllTypes:=ScanAllTypes+[vtSingle];
-        if cgAllTypes.checked[5] then ScanAllTypes:=ScanAllTypes+[vtDouble];
-        if cgAllTypes.checked[6] then ScanAllTypes:=ScanAllTypes+[vtCustom];
+        if cbAllByte.checked then ScanAllTypes:=ScanAllTypes+[vtByte];
+        if cbAllWord.checked then ScanAllTypes:=ScanAllTypes+[vtWord];
+        if cbAllDword.checked then ScanAllTypes:=ScanAllTypes+[vtDword];
+        if cbAllQword.checked then ScanAllTypes:=ScanAllTypes+[vtQword];
+        if cbAllSingle.checked then ScanAllTypes:=ScanAllTypes+[vtSingle];
+        if cbAllDouble.checked then ScanAllTypes:=ScanAllTypes+[vtDouble];
+        if cbAllCustom.checked then ScanAllTypes:=ScanAllTypes+[vtCustom];
 
-        reg.writebool('AllByte',cgAllTypes.checked[0]);
-        reg.writebool('AllWord',cgAllTypes.checked[1]);
-        reg.writebool('AllDWord',cgAllTypes.checked[2]);
-        reg.writebool('AllQWord',cgAllTypes.checked[3]);
-        reg.writebool('AllFloat',cgAllTypes.checked[4]);
-        reg.writebool('AllDouble',cgAllTypes.checked[5]);
-        reg.writebool('AllCustom',cgAllTypes.checked[6]);
+        reg.writebool('AllByte',cbAllByte.checked);
+        reg.writebool('AllWord',cbAllWord.checked);
+        reg.writebool('AllDWord',cbAllDword.checked);
+        reg.writebool('AllQWord',cbAllQword.checked);
+        reg.writebool('AllFloat',cbAllSingle.checked);
+        reg.writebool('AllDouble',cbAllDouble.checked);
+        reg.writebool('AllCustom',cbAllCustom.checked);
 
 
         reg.writebool('Can Step Kernelcode',cbCanStepKernelcode.checked);
@@ -598,6 +615,8 @@ begin
         reg.WriteInteger('Freeze interval',freezeinterval);
         reg.writebool('Show values as signed',cbShowAsSigned.checked);
 
+        reg.WriteBool('Skip PDB', cbSkipPDB.checked);
+        skippdb:=cbSkipPDB.checked;
 
         reg.WriteBool('Replace incomplete opcodes with NOPS',replacewithnops.checked);
         reg.WriteBool('Ask for replace with NOPS',askforreplacewithnops.checked);
@@ -643,6 +662,9 @@ begin
         reg.writebool('skip PAGE_NOCACHE',cbSkip_PAGE_NOCACHE.Checked);
         reg.writebool('skip PAGE_WRITECOMBINE',cbSkip_PAGE_WRITECOMBINE.Checked);
         reg.writebool('Pause when scanning on by default',cbPauseWhenScanningOnByDefault.Checked);
+        reg.writebool('Save memoryregion scansettings', cbSaveMemoryregionScanSettings.checked);
+
+
 
 
         reg.WriteInteger('Repeat Delay',repeatDelay);
@@ -714,7 +736,7 @@ begin
 
           //save the hotkeylist
           reg.{$ifdef windows}WriteBinaryData{$else}WriteString{$endif}('Attach to foregroundprocess Hotkey',{$ifndef windows}bintohexs({$endif}frameHotkeyConfig.newhotkeys[0][0],10){$ifndef windows}){$endif};
-          reg.{$ifdef windows}WriteBinaryData{$else}WriteString{$endif}('Show Cheat Engine Hotkey',{$ifndef windows}bintohexs({$endif}frameHotkeyConfig.newhotkeys[1][0],10){$ifndef windows}){$endif};
+          reg.{$ifdef windows}WriteBinaryData{$else}WriteString{$endif}('Show '+strCheatEngine+' Hotkey',{$ifndef windows}bintohexs({$endif}frameHotkeyConfig.newhotkeys[1][0],10){$ifndef windows}){$endif};
           reg.{$ifdef windows}WriteBinaryData{$else}WriteString{$endif}('Pause process Hotkey',{$ifndef windows}bintohexs({$endif}frameHotkeyConfig.newhotkeys[2][0],10){$ifndef windows}){$endif};
           reg.{$ifdef windows}WriteBinaryData{$else}WriteString{$endif}('Toggle speedhack Hotkey',{$ifndef windows}bintohexs({$endif}frameHotkeyConfig.newhotkeys[3][0],10){$ifndef windows}){$endif};
 
@@ -833,6 +855,17 @@ begin
         reg.WriteBool('Use Windows Debugger',cbUseWindowsDebugger.checked);
         reg.WriteBool('Use Kernel Debugger',cbKdebug.checked);
         reg.WriteBool('Use Global Debug Routines',cbGlobalDebug.checked);
+        reg.WriteBool('Use DBVM Debugger', cbUseDBVMDebugger.checked);
+
+        reg.writeBool('DBVMBP Trigger COW', cbDBVMDebugTriggerCOW.checked);
+        reg.writeBool('DBVMBP This Process Only', cbDBVMDebugTargetedProcessOnly.checked);
+        reg.writeBool('DBVMBP Kernelmode', cbDBVMDebugKernelmodeBreaks.checked);
+
+        dbvmbp_options.TriggerCOW:=cbDBVMDebugTriggerCOW.checked;
+        dbvmbp_options.TargetedProcessOnly:=cbDBVMDebugTargetedProcessOnly.checked;
+        dbvmbp_options.KernelmodeBreaks:=cbDBVMDebugKernelmodeBreaks.checked;
+
+
 
         waitafterguiupdate:=cbWaitAfterGuiUpdate.checked;
         reg.WriteBool('Wait After Gui Update', waitafterguiupdate);
@@ -927,7 +960,7 @@ begin
 
         if cbOverrideDefaultFont.checked then
         begin
-          if reg.OpenKey('\Software\Cheat Engine\Font', true) then
+          if reg.OpenKey('\Software\'+strCheatEngine+'\Font', true) then
             SaveFontToRegistry(fontdialog1.Font, reg);
         end;
 
@@ -952,8 +985,8 @@ begin
   {$ifndef net}
 
       //save the tools hotkeys
-      reg.DeleteKey('\Software\Cheat Engine\Tools');
-      if Reg.OpenKey('\Software\Cheat Engine\Tools',true) then
+      reg.DeleteKey('\Software\'+strCheatEngine+'\Tools');
+      if Reg.OpenKey('\Software\'+strCheatEngine+'\Tools',true) then
       begin
         for i:=0 to lvTools.Items.Count-1 do
         begin
@@ -972,8 +1005,8 @@ begin
       end;
 
       //save the plugins
-      reg.DeleteKey('\Software\Cheat Engine\Plugins'+cpu);
-      if Reg.OpenKey('\Software\Cheat Engine\Plugins'+cpu,true) then
+      reg.DeleteKey('\Software\'+strCheatEngine+'\Plugins'+cpu);
+      if Reg.OpenKey('\Software\'+strCheatEngine+'\Plugins'+cpu,true) then
       begin
         for i:=0 to clbplugins.Count-1 do
         begin
@@ -1141,18 +1174,20 @@ var
   old: string;
 
   settingsvis: boolean;
+  index: integer;
 begin
+  index:=lbLanguages.ItemIndex;
 
-  if lbLanguages.ItemIndex<>-1 then
+  if index<>-1 then
   begin
-    l:=TLanguageEntry(lbLanguages.Items.Objects[lbLanguages.ItemIndex]);
+    l:=TLanguageEntry(lbLanguages.Items.Objects[index]);
     if l<>nil then
       preferedLanguage:=l.foldername
     else
       preferedLanguage:='*';
 
     try
-      ini:=TIniFile.Create(cheatenginedir+'languages' + DirectorySeparator+'language.ini');
+      ini:=TIniFile.Create(cheatenginedir+{$ifdef darwin}'..'+DirectorySeparator+{$endif}'Languages' + DirectorySeparator+'language.ini');
       try
         old:=ini.ReadString('Language','PreferedLanguage','');
         ini.WriteString('Language','PreferedLanguage',preferedLanguage);
@@ -1172,26 +1207,6 @@ begin
     except
     end;
   end;
-
-
-  {settingsvis:=formSettings.Visible;
-
-  MemoryBrowser.Free;
-  MainForm.free;
-
-  Application.CreateForm(TMainForm, MainForm);
-  Application.CreateForm(TMemoryBrowser, MemoryBrowser);
-
-  MainForm.show;
-
-  Application.CreateForm(TformSettings, formSettings);
-
-  LoadSettingsFromRegistry;
-
-  if settingsvis then
-    modalresult:=formsettings.ShowModal;  }
-
-
 end;
 
 procedure TformSettings.cbAskIfTableHasLuascriptChange(Sender: TObject);
@@ -1226,6 +1241,12 @@ begin
   begin
     pcDebugConfig.ActivePageIndex:=3;
     pcDebugConfig.TabIndex:=3;
+  end
+  else
+  if cbUseDBVMDebugger.checked then
+  begin
+    pcDebugConfig.ActivePageIndex:=4;
+    pcDebugConfig.TabIndex:=4;
   end;
 
   rbPageExceptions.enabled:=not cbKDebug.checked; //currently the kerneldebugger doesn't handle pageexceptions yet (can be added, but not right now)
@@ -1297,7 +1318,8 @@ end;
 procedure TformSettings.FormDestroy(Sender: TObject);
 begin
   formSettings:=nil;
-  SaveFormPosition(self);
+  if hasBeenShown then
+    SaveFormPosition(self);
 end;
 
 {$ifdef darwin}
@@ -1355,6 +1377,7 @@ procedure TformSettings.FormShow(Sender: TObject);
 
   fd: TFontData;
 begin
+  hasBeenShown:=true;
   {$ifdef darwin}
   FixUpsideDownTreeview;
   {$endif}
@@ -1406,10 +1429,9 @@ begin
   cbVEHRealContextOnThreadCreation.AutoSize:=true;
 
 
-
   j:=tvMenuSelection.Width;
   for i:=0 to tvMenuSelection.Items.Count-1 do
-    j:=max(j,tvMenuSelection.Canvas.TextWidth(tvMenuSelection.Items[i].Text)+tvMenuSelection.BorderWidth+tvMenuSelection.Indent*2);
+    j:=max(j,tvMenuSelection.Canvas.TextWidth(' '+tvMenuSelection.Items[i].Text+' ')+tvMenuSelection.BorderWidth+tvMenuSelection.Indent*2);
 
 
   tvMenuSelection.Width:=j;
@@ -1450,7 +1472,7 @@ begin
 
   end;
 
- // GroupBox2.top:=rbgDebuggerInterface.top+rbgDebuggerInterface.height+4;
+ // GroupBox2.top:=gbDebuggerInterface.top+gbDebuggerInterface.height+4;
 
   unexpectedExceptionHandlerChanged:=false;
 
@@ -1585,6 +1607,7 @@ end;
 procedure TformSettings.ScanForLanguages;
 var
   i: integer;
+  index: integer;
   f: TStringList;
   n: string;
   e: TLanguageEntry;
@@ -1624,25 +1647,31 @@ begin
   mainform.miLanguages.Add(mi);
 
   f:=TStringList.Create;
-  FindAllDirectories(f,CheatEngineDir+'\languages',false);
+  {$ifdef darwin}
+  OutputDebugString('ScanForLanguages: Looking in '+CheatEngineDir+{$ifdef darwin}PathDelim+'..'+{$endif}PathDelim+'Languages');
+  {$endif}
+  FindAllDirectories(f,CheatEngineDir+{$ifdef darwin}PathDelim+'..'+{$endif}PathDelim+'Languages',false);
+
+  index:=1;
   for i:=0 to f.Count-1 do
   begin
     n:=f[i];
-    if not (fileexists(n+'\cheatengine.po') or fileexists(n+'\cheatengine-x86_64.po') or fileexists(n+'\cheatengine-i386.po')) then
+    if not (fileexists(n+pathsep+'cheatengine.po') or fileexists(n+PathDelim+'cheatengine-x86_64.po') or fileexists(n+PathDelim+'cheatengine-i386.po')) then
       continue;
 
 
     e:=TLanguageEntry.Create;
     e.foldername:=ExtractFileName(n);
 
-    if FileExists(f[i]+'\name.txt') then
-      n:=ReadFileToString(f[i]+'\name.txt')
+    if FileExists(f[i]+PathDelim+'name.txt') then
+      n:=ReadFileToString(f[i]+PathDelim+'name.txt')
     else
       n:=e.foldername;
 
     mi:=TMenuItem.Create(mainform.MainMenu1);
     mi.Caption:=n;
-    mi.Tag:=i+1;
+    mi.Tag:=index;
+    inc(index);
     mi.RadioItem:=true;
     if uppercase(e.foldername)=uppercase(curr) then
     begin
@@ -1706,6 +1735,10 @@ begin
   tvMenuSelection.Items[6].Visible:=false;
   tvMenuSelection.Items[10].Visible:={$ifdef windows}cansigntables{$else}false{$endif};
 
+  {$ifdef altname}
+  tvMenuSelection.Items[9].Visible:=false; //the pussy version does not have kernelmode tools
+  {$endif}
+
   pcSetting.ShowTabs:=false;
 
   ScanForLanguages;
@@ -1723,23 +1756,9 @@ begin
   end;
   combothreadpriority.ItemIndex:=4;
 
-  with cgAllTypes.Items do
-  begin
-    BeginUpdate;
-    clear;
-    add(rsByte);
-    add(rs2Bytes);
-    add(rs4Bytes);
-    add(rs8Bytes);
-    add(rsFloat);
-    add(rsDouble);
-    add(rsAllCustomTypes);
-    EndUpdate;
-  end;
-
-  cgAllTypes.Checked[2]:=true;
-  cgAllTypes.Checked[4]:=true;
-  cgAllTypes.Checked[5]:=true;
+  cbAllDword.Checked:=true;
+  cbAllSingle.Checked:=true;
+  cbAllDouble.Checked:=true;
 
 
   with frameHotkeyConfig.ListBox1.items do
@@ -1908,12 +1927,14 @@ begin
   cbUseWindowsDebugger.visible:=false;
   cbKDebug.enabled:=false;
   cbKDebug.visible:=false;
+  cbUseDBVMDebugger.enabled:=false;
+  cbUseDBVMDebugger.visible:=false;
   panel11.visible:=false;
 
   cbUseMacDebugger.checked:=true;
+
   {$else}
   cbUseMacDebugger.visible:=false;
-
   {$endif}
 end;
 

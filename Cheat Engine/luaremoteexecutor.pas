@@ -13,7 +13,15 @@ A process can have more than one executor thread at the same time
 interface
 
 uses
-  windows, Classes, SysUtils, math;    //todo: port to mac
+  {$ifdef windows}
+  windows,
+  {$endif}
+
+  {$ifdef darwin}
+  macport,
+  {$endif}
+
+  Classes, SysUtils, math;    //todo: port to mac
 
 type
   TStubdata=record
@@ -97,6 +105,7 @@ var
   starttime: qword;
   r: dword;
 begin
+  {$ifdef windows}
   starttime:=gettickcount64;
   repeat
     r:=WaitForSingleObject(HasProcessedDataEventHandle, min(timeout,100));
@@ -106,6 +115,9 @@ begin
 
   if r<>WAIT_OBJECT_0 then
     raise exception.Create('Timeout');
+  {$else}
+  raise exception.Create('Not yet implemented');
+  {$endif}
 end;
 
 function TRemoteExecutor.waitTillDoneAndGetResult(timeout: integer; var Buffers: TExecBufferArray): QWORD;
@@ -137,6 +149,7 @@ var
 
   ExecBuffer: TExecBuffer;
 begin
+  {$ifdef windows}
   if length(stubdata.parameters)<>length(values) then
     raise exception.create('Incorrect parameter count');
 
@@ -314,6 +327,10 @@ begin
 
   ResetEvent(HasProcessedDataEventHandle);
   SetEvent(HasDataEventHandle);  //do the call command
+
+  {$else}
+  raise exception.create('Not yet implemented');
+  {$endif}
 end;
 
 procedure TRemoteExecutor.growSharedMemorySize(newsize: integer; timeout: DWORD);
@@ -324,6 +341,7 @@ var
   oldSharedMemory: PRemoteExecutorSharedMemory;
   oldmemmap: THandle;
 begin
+  {$ifdef windows}
   if newsize>sharedMemorySize then
   begin
     oldSharedMemory:=sharedmemory;
@@ -366,17 +384,18 @@ begin
 
 
   end;
+  {$endif}
 end;
 
 constructor TRemoteExecutor.create;
 var
   h: THandle;
 
-  allocs: TCEAllocArray;
-  exceptionlist: TCEExceptionListArray;
+  disableinfo: TDisableInfo;
   executorThreadID: dword;
   script: TStringlist=nil;
 begin
+  {$ifdef windows}
   sharedmemorysize:=5*8; //sizeof(TRemoteExecutorSharedMemory); //can grow if needed
   memmap:=CreateFileMapping(INVALID_HANDLE_VALUE,nil,PAGE_READWRITE,0,sharedmemorysize,nil);
   if (memmap=0) or (memmap=INVALID_HANDLE_VALUE) then raise exception.create('Failure creating remote executor filemapping');
@@ -402,6 +421,7 @@ begin
 
 
   //inject the executor code
+  disableinfo:=TDisableInfo.create;
   script:=tstringlist.create;
   try
     script.add('alloc(Executor,2048)');
@@ -571,10 +591,10 @@ begin
     //debug:
    // clipboard.AsText:=script.text;
 
-    if autoAssemble(script,false,true,false,false,allocs,exceptionlist) then
+    if autoAssemble(script,false,true,false,false,disableinfo) then
     begin
       //create thread
-      ExecutorThreadExecMemory:=allocs[0].address;
+      ExecutorThreadExecMemory:=disableinfo.allocs[0].address;
       ExecutorThreadHandle:=CreateRemoteThread(processhandle,nil,0,pointer(ExecutorThreadExecMemory), pointer(remoteMemMapHandle),0,executorThreadID);
 
       if (ExecutorThreadHandle=0) or (ExecutorThreadHandle=INVALID_HANDLE_VALUE) then
@@ -586,12 +606,14 @@ begin
 
   finally
     script.free;
+    disableinfo.free;
   end;
-
+  {$endif}
 end;
 
 destructor TRemoteExecutor.destroy;
 begin
+  {$ifdef windows}
   //terminate the thread if it exists and free the memory
   if (ExecutorThreadHandle<>0) and (ExecutorThreadHandle=INVALID_HANDLE_VALUE) then
     TerminateThread(ExecutorThreadHandle,$101);
@@ -631,6 +653,7 @@ begin
     UnmapViewOfFile(sharedMemory);
 
   closehandle(memmap);
+  {$endif}
 end;
 
 
@@ -833,12 +856,12 @@ begin
       end;
 
       if (lua_gettop(L)>=3) and (not lua_isnil(L,3)) then
-        timeout:=lua_tointeger(L,2)
+        timeout:=lua_tointeger(L,3)
       else
         timeout:=INFINITE;
 
       if (lua_gettop(L)>=4) and (not lua_isnil(L,4)) then
-        waittilldone:=not lua_toboolean(L,3)
+        waittilldone:=not lua_toboolean(L,4)
       else
         waittilldone:=true;
 
@@ -895,8 +918,10 @@ end;
 
 procedure InitializeLuaRemoteExecutor;
 begin
+  {$ifdef windows}
   lua_register(LuaVM, 'createStubExecutor', lua_createStubExecutor);
   lua_register(LuaVM, 'createRemoteExecutor', lua_createStubExecutor); //just for those that dislike stubs
+  {$endif}
 end;
 
 initialization

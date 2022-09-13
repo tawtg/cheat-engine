@@ -7,7 +7,7 @@ interface
 
 uses
   {$ifdef windows}windows,{$endif} LCLIntf, Messages, SysUtils, Classes, Graphics, Controls, Forms,
-  Dialogs, Unit8, StdCtrls, Buttons, LResources, ExtCtrls, math;
+  Dialogs, Unit8, StdCtrls, Buttons, LResources, ExtCtrls, math, betterControls;
 
 type
   TPlayer=class
@@ -75,7 +75,7 @@ var
 
 implementation
 
-uses Unit4, frmHelpUnit;
+uses Unit4, frmHelpUnit, cetranslator;
 
 resourcestring
   rsThisPlayerIsAlreadyDeadRestartTheGame = 'This player is already dead. Restart the game';
@@ -305,7 +305,8 @@ procedure TForm10.FormCreate(Sender: TObject);
 begin
 
       //31337157
-  memo1.lines.text:=rsTutorialStep9;
+  caption:=altnamer(caption);
+  memo1.lines.text:=altnamer(rsTutorialStep9);
   memo1.Lines.Insert(0, Format(rsStep9SharedCodePW, [inttostr(313)+inttostr(37157)]));
 
   button3.Click;

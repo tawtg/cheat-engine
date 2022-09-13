@@ -19,21 +19,22 @@ uses
      {MemoryTrainerDesignUnit,}StdCtrls,{ExtraTrainerComponents,}Graphics,Controls,
      tableconverter, ExtCtrls,Dialogs,NewKernelHandler, hotkeyhandler, structuresfrm,
      StructuresFrm2, comctrls,dom, xmlread,xmlwrite, FileUtil, ceguicomponents,
-     zstream, luafile, disassemblerComments, commonTypeDefs, lazutf8;
+     zstream, luafile, disassemblerComments, commonTypeDefs, lazutf8, betterControls;
 
+const _CurrentTableVersion=42;
 
-var CurrentTableVersion: dword=32;
-    lastLoadedTableVersion: dword;
+var CurrentTableVersion: dword=_CurrentTableVersion;
+    lastLoadedTableVersion: dword=_CurrentTableVersion;
     iscetrainer: integer=0;
 
 procedure protecttrainer(filename: string);
 procedure unprotecttrainer(filename: string; stream: TStream);
-procedure SaveTable(Filename: string; protect: boolean=false; dontDeactivateDesignerForms: boolean=false);
+procedure SaveTable(Filename: string; protect: boolean=false; dontDeactivateDesignerForms: boolean=true);
 procedure LoadTable(Filename: string;merge: boolean);
 procedure SaveCEM(Filename:string;address:ptrUint; size:dword);
 procedure LoadXML(doc: TXMLDocument; merge: boolean; isTrainer: boolean=false);
-procedure SaveXML(doc: TXMLDocument; dontDeactivateDesignerForms: boolean=false); overload;
-procedure SaveXML(filename: string; dontDeactivateDesignerForms: boolean=false); overload;
+procedure SaveXML(doc: TXMLDocument; dontDeactivateDesignerForms: boolean=false; skipsign: boolean=false); overload;
+procedure SaveXML(filename: string; dontDeactivateDesignerForms: boolean=false; skipsign: boolean=false); overload;
 
 
 
@@ -204,27 +205,27 @@ uses MainUnit, mainunit2, symbolhandler, symbolhandlerstructs, LuaHandler,
 
 resourcestring
   strCorruptIcon='The icon has been corrupted';
-  strCantLoadFilepatcher='The file patcher can''t be loaded by Cheat Engine!';
-  strNotACETrainer='This is not a trainer made by Cheat Engine (If it is a trainer at all!)';
-  strUnknownTrainerVersion='This version of Cheat Engine doesn''t know how to read this trainer! Trainerversion=';
-  strCantLoadProtectedfile='This trainer is protected from being opened by CE. Now go away!!!';
+  strCantLoadFilepatcher='The file patcher can''t be loaded by '+strCheatEngine+'!';
+  strNotACETrainer='This is not a '+strTrainer+' made by '+strCheatEngine+' (If it is a '+strTrainer+' at all!)';
+  strUnknownTrainerVersion='This version of '+strCheatEngine+' doesn''t know how to read this '+strTrainer+'! '+strTrainer+'version=';
+  strCantLoadProtectedfile='This '+strTrainer+' is protected from being opened by '+strCheatEngine+'. Now go away!!!';
   rsThisTableContainsALuaScriptDoYouWantToRunIt = 'This table contains a lua script. Do you want to run it?';
   rsErrorExecutingThisTableSLuaScript = 'Error executing this table''s lua script: %s';
   rsErrorExecutingThisTableSLuaScriptEntry = 'Error executing this table''s lua script named %s: %s';
   rsTheRegionAtWasPartiallyOrCompletlyUnreadable = 'The region at %s was partially or completely unreadable';
-  rsTheVersionOfIsIncompatibleWithThisCEVersion = 'The version of %s is incompatible with this CE version';
+  rsTheVersionOfIsIncompatibleWithThisCEVersion = 'The version of %s is incompatible with this '+strCheatEngine+' version';
   rsDoesnTContainNeededInformationWhereToPlaceTheMemor = '%s doesn''t contain needed information where to place the memory';
-  rsThisIsNotAValidCheatTable = 'This is not a valid cheat table';
+  rsThisIsNotAValidCheatTable = 'This is not a valid '+strCheatTableLower;
   rsThisIsNotAValidXmlFile = 'This is not a valid xml file';
   rsUnknownExtention = 'Unknown extension';
   rsYouCanOnlyProtectAFileIfItHasAnCETRAINERExtension = 'You can only protect a file if it has an .CETRAINER extension';
   rsErrorSaving = 'Error saving...';
-  rsAskIfStupid = 'Generating a trainer with the current state of the cheat '
-    +'table will likely result in a completely useless trainer that does '
+  rsAskIfStupid = 'Generating a '+strtrainerlower+' with the current state of the cheat '
+    +'table will likely result in a completely useless '+strtrainerlower+' that does '
     +'nothing. Are you sure?';
-  rsOSThereIsANewerVersionifCheatEngineOutEtc = 'There is a newer version of Cheat Engine out. It''s recommended to use that version instead';
-  rsOSThisCheatTableIsCorrupt = 'This cheat table is corrupt';
-  rsInvalidLuaForTrainer = 'The lua script in this trainer has some issues and will therefore not load';
+  rsOSThereIsANewerVersionifCheatEngineOutEtc = 'There is a newer version of '+strCheatEngine+' out. It''s recommended to use that version instead';
+  rsOSThisCheatTableIsCorrupt = 'This '+strCheatTableLower+' is corrupt';
+  rsInvalidLuaForTrainer = 'The lua script in this '+strTrainerLower+' has some issues and will therefore not load';
 
 
 type
@@ -325,7 +326,7 @@ var
     imagepos: integer=0;
 
     cle: TCodeListEntry;
-    color: TColor;
+    EntryColor: TColor;
 
     hasLuaScript: boolean=false;
     usesScriptEntries: boolean=false;
@@ -469,12 +470,17 @@ begin
         if CodeEntry.NodeName='CodeEntry' then
         begin
           isCodeListGroupHeader:=false;
-          color:=clWindowText;
+          entrycolor:=clWindowText;
 
           if (CodeEntry.Attributes<>nil) then
           begin
             if (CodeEntry.Attributes.GetNamedItem('GroupHeader')<>nil) then isCodeListGroupHeader:=CodeEntry.Attributes.GetNamedItem('GroupHeader').TextContent='1';
-            if (CodeEntry.Attributes.GetNamedItem('Color')<>nil) then color:=strtoint('$'+CodeEntry.Attributes.GetNamedItem('Color').TextContent);
+            if (CodeEntry.Attributes.GetNamedItem('Color')<>nil) then entrycolor:=strtoint('$'+CodeEntry.Attributes.GetNamedItem('Color').TextContent);
+
+            if (entrycolor=graphics.clWindowText) or
+               (entrycolor=graphics.clDefault)
+            then //default color (wasn't supposed to be saved)
+              entrycolor:=clWindowtext;
           end;
 
 
@@ -567,10 +573,11 @@ begin
           with advancedoptions do
           begin
             cle:=TCodeListEntry.create;
-            cle.color:=color;
+            cle.color:=entrycolor;
+
             if isCodeListGroupHeader=false then
             begin
-              cle.code:=TCodeRecord.Create;
+              cle.code:=TAdvancedOptionsCodeRecord.Create;
 
 
               setlength(cle.code.before,length(tempbefore));
@@ -759,7 +766,7 @@ begin
         try
           Reg.RootKey := HKEY_CURRENT_USER;
 
-          if Reg.OpenKey('\Software\Cheat Engine',false) then   //fill it from the registry (in case it's loaded before the settings are loaded)
+          if Reg.OpenKey('\Software\'+strCheatEngine,false) then   //fill it from the registry (in case it's loaded before the settings are loaded)
           begin
             if reg.ValueExists('LuaScriptAction') then
               i:=reg.ReadInteger('LuaScriptAction')
@@ -1193,7 +1200,7 @@ begin
   end;
 end;
 
-procedure SaveXML(doc: TXMLDocument; dontDeactivateDesignerForms: boolean=false);
+procedure SaveXML(doc: TXMLDocument; dontDeactivateDesignerForms: boolean=false; skipsign: boolean=false);
 var
   CheatTable: TDOMElement;
   Files, Forms,Entries,Symbols, Structures, Comment,luascript, luascriptentry, dcomments: TDOMNode;
@@ -1237,9 +1244,15 @@ begin
     for i:=0 to AdvancedOptions.count-1 do
     begin
       CodeRecord:=CodeRecords.AppendChild(doc.CreateElement('CodeEntry'));
-      a:=doc.CreateAttribute('Color');
-      a.TextContent:=inttohex(TCodeListEntry(advancedoptions.lvCodelist.Items[i].data).color,8);
-      CodeRecord.Attributes.SetNamedItem(a);
+
+      if (TCodeListEntry(advancedoptions.lvCodelist.Items[i].data).color<>clWindowtext) and
+         (TCodeListEntry(advancedoptions.lvCodelist.Items[i].data).color<>graphics.clDefault)
+      then //don't save the color if it's the default color
+      begin
+        a:=doc.CreateAttribute('Color');
+        a.TextContent:=inttohex(TCodeListEntry(advancedoptions.lvCodelist.Items[i].data).color,8);
+        CodeRecord.Attributes.SetNamedItem(a);
+      end;
 
       if AdvancedOptions.code[i]=nil then
       begin
@@ -1347,22 +1360,22 @@ begin
   end;
 
   {$ifdef windows}
-  if cansigntables and formsettings.cbAlwaysSignTable.checked then
+  if (not skipsign) and cansigntables and formsettings.cbAlwaysSignTable.checked then
     signTable(cheattable);
   {$endif}
 
 end;
 
-procedure SaveXML(Filename: string; dontDeactivateDesignerForms: boolean=false);
+procedure SaveXML(Filename: string; dontDeactivateDesignerForms: boolean=false; skipsign: boolean=false);
 var doc: TXMLDocument;
 begin
   doc:=TXMLDocument.Create;
-  SaveXML(doc, dontDeactivateDesignerForms);
+  SaveXML(doc, dontDeactivateDesignerForms, skipsign);
   WriteXMLFile(doc, filename);
   doc.Free;
 end;
 
-procedure SaveTable(Filename: string; protect: boolean=false; dontDeactivateDesignerForms: boolean=false);
+procedure SaveTable(Filename: string; protect: boolean=false; dontDeactivateDesignerForms: boolean=true);
 begin
   try
     if Uppercase(utf8tosys(extractfileext(filename)))<>'.EXE' then

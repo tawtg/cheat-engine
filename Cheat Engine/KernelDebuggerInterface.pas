@@ -71,6 +71,7 @@ uses symbolhandler, ProcessHandlerUnit, dialogs;
 
 resourcestring
   rsDBKDebug_StartDebuggingFailed ='DBKDebug_StartDebugging failed';
+  rsKernelModeNeedsDBVM = 'You can''t use kerneldebug in 64-bit without DBVM';
 
 procedure TThreadPoller.CreateThreadEvent(threadid: dword);
 var ie: PInjectedEvent;
@@ -186,10 +187,13 @@ begin
 
   if result then
   begin
-    processhandler.processid:=dwProcessID;
-    Open_Process;
-    symhandler.reinitialize;
-    symhandler.waitforsymbolsloaded(true);
+    if processhandler.processid<>dwProcessId then
+    begin
+      processhandler.processid:=dwProcessID;
+      Open_Process;
+      symhandler.reinitialize;
+      symhandler.waitforsymbolsloaded(true);
+    end;
 
     pid:=dwProcessID;
 
@@ -484,7 +488,7 @@ begin
 
 {$IFDEF CPU64}
   if loaddbvmifneeded=false then
-    raise exception.create('You can''t use kerneldebug in 64-bit without DBVM');
+    raise exception.create(rsKernelModeNeedsDBVM);
 {$ENDIF}
 
 
@@ -492,7 +496,7 @@ begin
   DBKDebug_SetGlobalDebugState(globalDebug);
   injectedEvents:=TQueue.Create;
 
-  fDebuggerCapabilities:=[dbcHardwareBreakpoint, dbcDBVMBreakpoint];
+  fDebuggerCapabilities:=fDebuggerCapabilities+[dbcHardwareBreakpoint, dbcDBVMBreakpoint];
   name:='Kernelmode Debugger';
 
   fmaxSharedBreakpointCount:=4;

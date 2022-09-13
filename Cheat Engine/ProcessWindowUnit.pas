@@ -14,7 +14,7 @@ uses
   LCLIntf, Messages, SysUtils, Classes, Graphics, Controls,
   Forms, Dialogs, StdCtrls, ExtCtrls, CEFuncProc,CEDebugger, ComCtrls, ImgList,
   Filehandler, Menus, LResources,{tlhelp32,}{$ifdef windows}vmxfunctions,{$endif} NewKernelHandler,
-  debugHelper{, KIcon}, commonTypeDefs, math, syncobjs, Contnrs;
+  debugHelper{, KIcon}, commonTypeDefs, math,lcltype, syncobjs, Contnrs, betterControls;
 
 type
   TProcesslistlong = class(tthread)
@@ -163,7 +163,7 @@ implementation
 
 uses MainUnit, formsettingsunit, advancedoptionsunit,frmProcessWatcherUnit,
   memorybrowserformunit{$ifdef windows}, networkConfig{$endif}, ProcessHandlerUnit, processlist, globals,
-  registry, fontSaveLoadRegistry, frmOpenFileAsProcessDialogUnit;
+  registry, fontSaveLoadRegistry, frmOpenFileAsProcessDialogUnit, networkInterfaceApi, MainUnit2;
 
 resourcestring
   rsIsnTAValidProcessID = '%s isn''t a valid processID';
@@ -243,6 +243,7 @@ var
   e: PIconFetchEntry;
   pid: dword;
 begin
+  NameThreadForDebugging('TIconFetchThread', ThreadID);
   while not terminated do
   begin
     wr:=hasdata.WaitFor(1000);
@@ -583,6 +584,8 @@ begin
   tsWindows.Visible:=false;
   {$endif}
 
+
+
   {$ifdef windows}
   IconFetchThread:=TIconFetchThread.create;
   {$endif}
@@ -608,8 +611,10 @@ begin
 
   reg:=tregistry.create;
   try
-    if reg.OpenKey('\Software\Cheat Engine\Process Window\Font',false) then
-      LoadFontFromRegistry(processlist.Font, reg);
+    if reg.OpenKey('\Software\'+strCheatEngine+'\Process Window\Font'+darkmodestring,false) then
+      LoadFontFromRegistry(processlist.Font, reg)
+    else
+      processlist.font.color:=colorset.FontColor;
 
 
   finally
@@ -654,7 +659,7 @@ begin
 
     reg:=tregistry.create;
     try
-      if reg.OpenKey('\Software\Cheat Engine\Process Window\Font',true) then
+      if reg.OpenKey('\Software\'+strCheatEngine+'\Process Window\Font'+darkmodestring,true) then
         SaveFontToRegistry(FontDialog1.Font, reg);
 
 
@@ -683,10 +688,15 @@ begin
 
   if frmNetworkConfig.ShowModal=mrok then
   begin
+    tabheader.ShowTabs:=false;
+
     if TabHeader.TabIndex=1 then
       refreshlist
     else
+    begin
       TabHeader.Tabindex:=1;
+      refreshlist;
+    end;
   end;
   {$endif}
 end;
@@ -782,7 +792,7 @@ end;
 procedure TProcessWindow.OKButtonClick(Sender: TObject);
 var ProcessIDString: String; 
 begin
-  //Outputdebugstring('OK button click');
+  Outputdebugstring('OK button click');
   if Processlist.ItemIndex>-1 then
   begin
     unpause;
@@ -790,6 +800,7 @@ begin
 
     ProcessIDString:=copy(ProcessList.Items[Processlist.ItemIndex], 1, pos('-',ProcessList.Items[Processlist.ItemIndex])-1);
 
+    Outputdebugstring('calling PWOD');
     PWOP(ProcessIDString);
 
 
@@ -854,12 +865,17 @@ end;
 procedure TProcessWindow.btnAttachDebuggerClick(Sender: TObject);
 var ProcessIDString: String;
     i:               Integer;
+    oldpid,newpid: dword;
+
+    starttime: qword;
 begin
+  oldpid:=processid;
 
   if Processlist.ItemIndex>-1 then
   begin
     if MessageDlg(rsAttachdebuggerornot, mtConfirmation, [mbyes, mbno], 0)=mryes then
     begin
+
       unpause;
       DetachIfPossible;
 
@@ -871,9 +887,9 @@ begin
         inc(i);
       end;
 
-      val('$'+ProcessIDString,ProcessHandler.processid,i);
+      val('$'+ProcessIDString,newpid,i);
 
-      if Processhandle<>0 then
+      if (Processhandle<>0) and (oldpid<>newpid) then
       begin
         CloseHandle(ProcessHandle);
         ProcessHandler.ProcessHandle:=0;
@@ -882,7 +898,9 @@ begin
       try
         if processid=GetCurrentProcessId then raise exception.create(rsPleaseSelectAnotherProcess);
 
-        Debuggerthread:=TDebuggerThread.MyCreate2(processid);
+        starttime:=GetTickCount64;
+        Debuggerthread:=TDebuggerThread.MyCreate2(newpid);
+
       except
         on e: exception do
         begin
@@ -891,6 +909,8 @@ begin
           exit;
         end;
       end;
+
+      OutputDebugString('Debugger attach time='+(GetTickCount64-starttime).ToString);
 
       mainform.ProcessLabel.Caption:=ProcessList.Items[Processlist.ItemIndex];
 
@@ -905,9 +925,7 @@ end;
 
 procedure TProcessWindow.btnOpenFileClick(Sender: TObject);
 begin
-
-   {$ifdef windows}
-
+  {$ifdef windows}
   if opendialog2.execute then
   begin
     if frmOpenFileAsProcessDialog=nil then
@@ -927,7 +945,9 @@ begin
       modalresult:=mrok;
     end;
   end;
-   {$endif}
+  {$else}
+  MessageDlg('Not yet implemented', mtError,[mbok],0);
+  {$endif}
 
 end;
 
@@ -1001,6 +1021,9 @@ begin
     processlistlong:=nil;
     miProcessListLong.Caption:=rsProcessListLong;
   end;
+
+
+  position:=poDesigned;
 end;
 
 procedure TProcessWindow.PopupMenu1Popup(Sender: TObject);
@@ -1046,7 +1069,16 @@ begin
   end;
 
 
+
+  if odSelected in state then
+    processlist.Canvas.font.color:=clHighlightText
+  else
+    processlist.Canvas.font.color:=processlist.font.color;
+
   processlist.Canvas.TextOut(rect.Left+rect.Bottom-rect.Top+3,rect.Top,t);
+
+  if getConnection<>nil then exit;
+
   {$ifdef windows}
   if getprocessicons and (processlist.Items.Objects[index]<>nil) then
   begin
@@ -1070,6 +1102,8 @@ var
   s: string;
   i: integer;
 begin
+  if getconnection<>nil then
+    tabheader.ShowTabs:=true;
 
   OKButton.Constraints.MinHeight:=trunc(1.2*btnAttachDebugger.height);
   CancelButton.Constraints.MinHeight:=OKButton.Constraints.MinHeight;

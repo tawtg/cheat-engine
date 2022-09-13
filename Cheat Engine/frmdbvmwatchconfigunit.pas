@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, FileUtil, Forms, Controls, Graphics, Dialogs, StdCtrls,
-  ExtCtrls;
+  ExtCtrls, betterControls;
 
 type
 
@@ -59,14 +59,17 @@ type
     { public declarations }
   end;
 
+  TfrmDBVMExecuteWatchConfig=class(TfrmDBVMWatchConfig);
+
 var
   frmDBVMWatchConfig: TfrmDBVMWatchConfig;
+  frmDBVMWatchConfigFindWhatCodeAccesses: TfrmDBVMExecuteWatchConfig;
 
 implementation
 
 {$R *.lfm}
 
-uses math,NewKernelHandler, ProcessHandlerUnit, vmxfunctions, registry{$ifdef darwin},macport{$endif};
+uses math,NewKernelHandler, ProcessHandlerUnit, vmxfunctions, registry{$ifdef darwin},macport{$endif},mainunit2;
 
 function TfrmDBVMWatchConfig.getMaxEntries: integer;
 begin
@@ -156,7 +159,7 @@ begin
   try
     Reg.RootKey := HKEY_CURRENT_USER;
 
-    if Reg.OpenKey('\Software\Cheat Engine\DBVMWatch', false) then
+    if Reg.OpenKey('\Software\'+strCheatEngine+'\DBVMWatch', false) then
     begin
       if reg.ValueExists('Lock Page') then cbLockPage.checked:=reg.ReadBool('Lock Page');
       if reg.ValueExists('Log FPU') then cbSaveFPU.checked:=reg.ReadBool('Log FPU');
@@ -184,7 +187,7 @@ begin
   try
     Reg.RootKey := HKEY_CURRENT_USER;
 
-    if Reg.OpenKey('\Software\Cheat Engine\DBVMWatch', true) then
+    if Reg.OpenKey('\Software\'+strCheatEngine+'\DBVMWatch', true) then
     begin
       reg.writeBool('Lock Page', cbLockPage.checked);
       reg.writeBool('Log FPU', cbSaveFPU.checked);

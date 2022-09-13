@@ -14,14 +14,14 @@ interface
 
 uses
   {$ifdef darwin}
-  macport,
+  macport, macportdefines,
   {$endif}
   {$ifdef windows}
   windows,
   {$endif}
   LCLIntf, dialogs, SysUtils, classes, ComCtrls, CEFuncProc,
      NewKernelHandler, symbolhandler, symbolhandlerstructs, math,
-     bigmemallochandler, maps, luahandler, lua, lauxlib, lualib, luaclass,
+     bigmemallochandler, maps, luahandler, lua, lauxlib, lualib, LuaClass,
      LuaObject, zstream, commonTypeDefs;
 
 const scandataversion=1;
@@ -43,7 +43,7 @@ type
 
   TMemoryRegion2 = record
     BaseAddress: ptrUint;
-    MemorySize: dword;
+    MemorySize: size_t;
     InModule: boolean;
     ValidPointerRange: boolean;
   end;
@@ -111,6 +111,10 @@ type
 
     ScannablePages: TMap;
 
+    progressbar: TProgressbar;
+    progressbarmax: integer;
+
+
     function BinSearchMemRegions(address: ptrUint): integer;
     function isModulePointer(address: ptrUint): boolean;
     function ispointer(address: ptrUint): boolean;
@@ -132,6 +136,9 @@ type
 
     procedure LoadModuleList(s: TStream);
     function  LoadHeader(s: TStream): qword;
+
+    procedure progressbarinit;
+    procedure progressbarstep;
   public
     count: qword;
 
@@ -145,7 +152,7 @@ type
     procedure saveModuleListToResults(s: TStream);
 
     function findPointerValue(startvalue: ptrUint; var stopvalue: ptrUint): PPointerList;
-    constructor create(start, stop: ptrUint; alligned: boolean; progressbar: tprogressbar; noreadonly: boolean; mustbeclasspointers, allowNonModulePointers: boolean; useStacks: boolean; stacksAsStaticOnly: boolean; threadstacks: integer; stacksize: integer; specificBaseAsStaticOnly: boolean; baseStart: ptruint; baseStop: ptruint; includeSystemModules: boolean=false; regionfilename: string='');
+    constructor create(start, stop: ptrUint; alligned: boolean; _progressbar: tprogressbar; noreadonly: boolean; mustbeclasspointers, allowNonModulePointers: boolean; useStacks: boolean; stacksAsStaticOnly: boolean; threadstacks: integer; stacksize: integer; specificBaseAsStaticOnly: boolean; baseStart: ptruint; baseStop: ptruint; includeSystemModules: boolean=false; regionfilename: string=''; shouldquit: pboolean=nil);
     constructor createFromStream(s: TStream; progressbar: tprogressbar=nil);
     constructor createFromStreamHeaderOnly(s: TStream);
     destructor destroy; override;
@@ -167,6 +174,19 @@ resourcestring
   rsPVInvalidScandataFile = 'Invalid scandata file';
   rsPVInvalidScandataVersion = 'Invalid scandata version';
   rsPVNotEnoughMemoryFreeToScan = 'Not enough memory free to scan';
+
+procedure TReversePointerListHandler.progressbarinit;
+begin
+  progressbar.Min:=0;
+  progressbar.Step:=1;
+  progressbar.Position:=0;
+  progressbar.max:=progressbarmax;
+end;
+
+procedure TReversePointerListHandler.progressbarstep;
+begin
+  progressbar.StepIt;
+end;
 
 function TReversePointerListHandler.BinSearchMemRegions(address: ptrUint): integer;
 var
@@ -392,6 +412,7 @@ var
   moduleindex: integer;
 
 begin
+
   plist:=findoraddpointervalue(pointervalue);
 
   if not add then
@@ -945,7 +966,7 @@ begin
 
 end;
 
-constructor TReversePointerListHandler.create(start, stop: ptrUint; alligned: boolean; progressbar: tprogressbar; noreadonly: boolean; mustbeclasspointers, allowNonModulePointers: boolean; useStacks: boolean; stacksAsStaticOnly: boolean; threadstacks: integer; stacksize: integer; specificBaseAsStaticOnly: boolean; baseStart: ptruint; baseStop: ptruint; includeSystemModules: boolean=false; regionfilename: string='');
+constructor TReversePointerListHandler.create(start, stop: ptrUint; alligned: boolean; _progressbar: tprogressbar; noreadonly: boolean; mustbeclasspointers, allowNonModulePointers: boolean; useStacks: boolean; stacksAsStaticOnly: boolean; threadstacks: integer; stacksize: integer; specificBaseAsStaticOnly: boolean; baseStart: ptruint; baseStop: ptruint; includeSystemModules: boolean=false; regionfilename: string=''; ShouldQuit: pboolean=nil);
 var bytepointer: PByte;
     dwordpointer: PDword absolute bytepointer;
     qwordpointer: PQword absolute bytepointer;
@@ -957,7 +978,7 @@ var bytepointer: PByte;
     mbi : _MEMORY_BASIC_INFORMATION;
     address: ptrUint;
     pfn: ptruint;
-    size:       dword;
+    size:       qword;
 
     i: Integer;
     j: Integer;
@@ -980,6 +1001,7 @@ var bytepointer: PByte;
     prangelist: TPRangeDynArray;
 
 begin
+  self.progressbar:=_progressbar;
   OutputDebugString('TReversePointerListHandler.create');
   try
     bigalloc:=TBigMemoryAllocHandler.create;
@@ -1084,13 +1106,14 @@ begin
         else
           valid:=true;
 
+        i:=length(memoryregion);
         setlength(memoryregion,length(memoryregion)+1);
 
-        memoryregion[length(memoryregion)-1].BaseAddress:=ptrUint(mbi.baseaddress);  //just remember this location
-        memoryregion[length(memoryregion)-1].MemorySize:=mbi.RegionSize;
-        memoryregion[length(memoryregion)-1].InModule:=symhandler.inModule(ptrUint(mbi.baseaddress));
+        memoryregion[i].BaseAddress:=ptrUint(mbi.baseaddress);  //just remember this location
+        memoryregion[i].MemorySize:=mbi.RegionSize;
+        memoryregion[i].InModule:=symhandler.inModule(ptrUint(mbi.baseaddress));
 
-        memoryregion[length(memoryregion)-1].ValidPointerRange:=valid;
+        memoryregion[i].ValidPointerRange:=valid;
 
        // outputdebugstring(inttohex(ptrUint(mbi.baseaddress),8));
       end;
@@ -1128,7 +1151,8 @@ begin
     valid:=memoryregion[0].ValidPointerRange;
 
     for i:=1 to length(memoryregion)-1 do
-    begin                                                            //only concatenate if classpointers is false, or the same type of executable field is used
+    begin
+      //only concatenate if classpointers is false, or the same type of executable field is used
       if (memoryregion[i].BaseAddress=address+size) and (memoryregion[i].ValidPointerRange=valid) and ((mustbeclasspointers=false) or (memoryregion[i].InModule=InModule)) then
         inc(size,memoryregion[i].MemorySize)
       else
@@ -1153,7 +1177,6 @@ begin
     setlength(memoryregion,j+1);
 
 
-
     //split up the memory regions into small chunks of max 512KB (so don't allocate a fucking 1GB region)
     i:=0;
     while i<length(memoryregion) do
@@ -1174,16 +1197,17 @@ begin
     end;
 
     //sort memoryregions from small to high
+    OutputDebugString('After split:');
     quicksortmemoryregions(0,length(memoryregion)-1);
+
 
     TotalToRead:=0;
     For i:=0 to length(memoryregion)-1 do
       inc(TotalToRead,Memoryregion[i].MemorySize);
 
-    progressbar.Min:=0;
-    progressbar.Step:=1;
-    progressbar.Position:=0;
-    progressbar.max:=length(memoryregion)*2+1;
+    progressbarmax:=length(memoryregion)*2+1;
+
+    TThread.Queue(nil, progressbarinit);
 
 
     maxsize:=0;
@@ -1234,11 +1258,11 @@ begin
           begin
             while ptrUint(bytepointer)<=lastaddress do
             begin
-
-
               if (alligned and ((qwordpointer^ mod 4)=0) and ispointer(qwordpointer^)) or
                  ((not alligned) and ispointer(qwordpointer^) ) then
               begin
+                if (ShouldQuit<>nil) and ShouldQuit^ then exit;
+
                 valid:=true;
 
                 //initial add
@@ -1283,6 +1307,7 @@ begin
                  ((not alligned) and ispointer(dwordpointer^) ) then
               begin
                 //initial add
+                if (ShouldQuit<>nil) and ShouldQuit^ then exit;
                 valid:=true;
 
                 if mustbeclasspointers then
@@ -1320,7 +1345,8 @@ begin
 
         end;
 
-        progressbar.StepIt;
+        TThread.Queue(nil, progressbarstep);
+        //progressbar.StepIt;
       end;
 
       //actual add
@@ -1344,6 +1370,7 @@ begin
                  ((not alligned) and ispointer(qwordpointer^) ) then
               begin
                 //initial add
+                if (ShouldQuit<>nil) and ShouldQuit^ then exit;
                 valid:=true;
 
                 if mustbeclasspointers then
@@ -1391,7 +1418,9 @@ begin
                  ((not alligned) and ispointer(dwordpointer^) ) then
               begin
                 //initial add
+                if (ShouldQuit<>nil) and ShouldQuit^ then exit;
                 valid:=true;
+
 
                 if mustbeclasspointers then
                 begin
@@ -1430,15 +1459,15 @@ begin
           end;
         end;
 
-        progressbar.StepIt;
+        TThread.Queue(nil, progressbarstep);
+        //progressbar.StepIt;
       end;
 
       //and fill in the linked list
       OutputDebugString('filling linked list');
       fillLinkedList;
 
-      progressbar.Position:=0;
-
+      TThread.Queue(nil, progressbarinit);
     finally
       //OutputDebugString('Freeing the buffer');
       if buffer<>nil then
@@ -1504,6 +1533,62 @@ begin
   end;
 end;
 
+function ReversePointerListHandler_enumMemoryRegions(L: PLua_State): integer; cdecl;
+var
+  list: TReversePointerListHandler;
+  i: integer;
+begin
+  list:=luaclass_getClassObject(L);
+  lua_createtable(L, length(list.memoryregion),0);
+
+  for i:=0 to length(list.memoryregion)-1 do
+  begin
+    lua_pushinteger(L,i+1);
+    lua_createtable(L,0,4);
+
+
+    lua_pushstring(L,'BaseAddress');
+    lua_pushinteger(L,list.memoryregion[i].BaseAddress);
+    lua_settable(L,-3);
+
+    lua_pushstring(L,'MemorySize');
+    lua_pushinteger(L,list.memoryregion[i].MemorySize);
+    lua_settable(L,-3);
+
+    lua_pushstring(L,'InModule');
+    lua_pushboolean(L,list.memoryregion[i].InModule);
+    lua_settable(L,-3);
+
+    lua_pushstring(L,'ValidPointerRange');
+    lua_pushboolean(L,list.memoryregion[i].ValidPointerRange);
+    lua_settable(L,-3);
+
+
+    lua_settable(L,-3);
+  end;
+
+  result:=1;
+end;
+
+function ReversePointerListHandler_enumModules(L: PLua_State): integer; cdecl;
+var
+  list: TReversePointerListHandler;
+  i: integer;
+begin
+  list:=luaclass_getClassObject(L);
+
+  lua_createtable(L,0, list.count);
+
+  for i:=0 to list.ModuleList.count-1 do
+  begin
+    lua_pushstring(L, list.modulelist[i]);
+    lua_pushinteger(L, ptruint(list.modulelist.Objects[i]));
+    lua_settable(L,-3);
+  end;
+
+  result:=1;
+end;
+
 function ReversePointerListHandler_findPointerValue(L: PLua_State): integer; cdecl;
 var
   startvalue, stopvalue: ptruint;
@@ -1514,35 +1599,43 @@ var
 begin
   list:=luaclass_getClassObject(L);
 
-  startvalue:=lua_tointeger(L,1);
-  stopvalue:=lua_tointeger(L,2);
+  result:=0;
 
-  pl:=list.findPointerValue(startvalue, stopvalue);
-  if pl<>nil then
+  if lua_gettop(L)>=1 then
   begin
-    lua_newtable(L);
-    pli:=lua_gettop(L);
+    startvalue:=lua_tointeger(L,1);
 
-    for i:=0 to pl^.pos-1 do
-    begin
-      lua_pushinteger(L,i+1);
-      lua_pushinteger(L,pl^.list[i].address);
-      lua_settable(L,pli);
-    end;
+    if lua_gettop(L)>=2 then
+      stopvalue:=lua_tointeger(L,2)
+    else
+      stopvalue:=startvalue;
 
-    pl:=pl^.previous;
+    pl:=list.findPointerValue(startvalue, stopvalue);
     if pl<>nil then
     begin
-      stopvalue:=pl^.pointervalue;
-      lua_pushinteger(L,stopvalue);
-    end
-    else
-      lua_pushnil(L);
+      lua_newtable(L);
+      pli:=lua_gettop(L);
 
-    result:=2;
-  end
-  else
-    exit(0);
+      for i:=0 to pl^.pos-1 do
+      begin
+        lua_pushinteger(L,i+1);
+        lua_pushinteger(L,pl^.list[i].address);
+        lua_settable(L,pli);
+      end;
+
+      pl:=pl^.previous;
+      if pl<>nil then
+      begin
+        stopvalue:=pl^.pointervalue;
+        lua_pushinteger(L,stopvalue);
+      end
+      else
+        lua_pushnil(L);
+
+      result:=2;
+    end
+  end;
+
 end;
 
 procedure ReversePointerListHandler_addMetaData(L: PLua_state; metatable: integer; userdata: integer );
@@ -1550,6 +1643,8 @@ begin
   object_addMetaData(L, metatable, userdata);
 
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'findPointerValue', ReversePointerListHandler_findPointerValue);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'enumModules', ReversePointerListHandler_enumModules);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'enumMemoryRegions', ReversePointerListHandler_enumMemoryRegions);
 end;
 
 procedure initializeLuaPointerValueList;

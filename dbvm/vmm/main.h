@@ -19,7 +19,7 @@ extern void vmcall_intel(void);
 extern void *vmcall_instr; //holds a pointer to either vmcall_amd or vmcall_intel
 extern int vmcalltest_asm(void);
 extern int vmcall_setintredirects(void);
-extern QWORD _vmcall(ULONG password, void* data);
+extern QWORD _vmcall(void* data);
 
 extern void _pause(void);
 extern UINT64 _vmread(ULONG index);
@@ -104,7 +104,7 @@ extern UINT64 loadedOS;
 PTSS mainTSS;
 
 int vmxloop(pcpuinfo currentcpuinfo, UINT64 *eaxbase);
-int vmxloop_amd(pcpuinfo currentcpuinfo, UINT64 vmcb_pa, UINT64 *eaxbase);
+int vmxloop_amd(pcpuinfo currentcpuinfo, UINT64 vmcb_pa, UINT64 vmcb_hostsave_pa, UINT64 *eaxbase);
 
 extern int vmxstartup_end;
 
@@ -140,8 +140,11 @@ int IDT_SIZE;
 void menu(void);
 
 //filled in by vmm.map parser
-ULONG        Password1;
-ULONG        Password2;
+QWORD        Password1; //edx : if the upper bits of the field is filled in, this will disable access for 32-bit targets
+ULONG        Password2; //memory
+QWORD        Password3; //ecx  ^ see password1
+
+
 extern QWORD dbvmversion;
 
 //crc checksums
@@ -168,5 +171,7 @@ extern pcpuinfo firstcpuinfo;
 #define vmwrite _vmwrite
 #define vmread2 _vmread2
 #define vmwrite2 _vmwrite2
+
+void menu(void);
 
 #endif /*MAIN_H_*/

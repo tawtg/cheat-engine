@@ -48,6 +48,11 @@
 
 #define CMD_VIRTUALQUERYEXFULL      31
 #define CMD_GETREGIONINFO           32
+#define CMD_GETABI                  33
+//4
+#define CMD_SET_CONNECTION_NAME     34
+
+#define CMD_CREATETOOLHELP32SNAPSHOTEX 35
 
 #define CMD_AOBSCAN					200
 
@@ -80,12 +85,11 @@ typedef struct {
 } CeProcessEntry, *PCeProcessEntry;
 
 typedef struct {
-    int result;
+    int32_t result;
     int64_t modulebase;
-    int modulesize;
-    int modulenamesize;
-    //modulename
-
+    int32_t modulepart;
+    int32_t modulesize;
+    int32_t modulenamesize;
 } CeModuleEntry, *PCeModuleEntry;
 
 typedef struct {
@@ -251,6 +255,10 @@ ssize_t sendall (int s, void *buf, size_t size, int flags);
 ssize_t recvall (int s, void *buf, size_t size, int flags);
 int DispatchCommand(int currentsocket, unsigned char command);
 int CheckForAndDispatchCommand(int currentsocket);
+
+extern int PORT;
+extern __thread char* threadname;
+
 
 #if BUILD_OPTION == 1
   #define SHARED_LIBRARY

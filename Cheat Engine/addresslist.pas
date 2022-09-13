@@ -12,7 +12,7 @@ uses
   LCLIntf, LCLType, Classes, SysUtils, controls, stdctrls, comctrls, ExtCtrls, graphics,
   math, MemoryRecordUnit, FPCanvas, CEFuncProc, NewKernelHandler, menus,dom,
   XMLRead,XMLWrite, symbolhandler, AddresslistEditor, inputboxtopunit,
-  frmMemrecComboboxUnit, commonTypeDefs, multilineinputqueryunit, LazUTF8, StringHashList;
+  frmMemrecComboboxUnit, commonTypeDefs, multilineinputqueryunit, LazUTF8, StringHashList, betterControls;
 
 type
   TTreeviewWithScroll=class(TTreeview)
@@ -134,6 +134,7 @@ type
     function activecompare(_a: TTreenode; _b: TTreenode): integer;
     procedure sortByActive;
     function descriptioncompare(_a: TTreenode; _b: TTreenode): integer;
+    function descriptioncomparecasesensitive(_a: TTreenode; _b: TTreenode): integer;
     procedure sortByDescription;
     function addresscompare(_a: TTreenode; _b: TTreenode): integer;
     procedure sortByAddress;
@@ -156,7 +157,7 @@ type
     procedure DeactivateSelected;
     procedure CreateGroup(groupname: string; withAddress: boolean=false);
     procedure addAutoAssembleScript(script: string);
-    function addAddressManually(initialaddress: string=''; vartype: TVariableType=vtDword; CustomTypeName: string=''): TMemoryRecord;
+    function addAddressManually(initialaddress: string=''; vartype: TVariableType=vtDword; CustomTypeName: string=''; focusOnDescription: boolean=false): TMemoryRecord;
     function addaddress(description: string; address: string; const offsets: array of integer; offsetcount: integer; vartype: TVariableType; customtypename: string=''; length: integer=0; startbit: integer=0; unicode: boolean=false; node: TTreenode=nil; attachmode: TNodeAttachMode=naAdd): TMemoryRecord;
     function getRecordWithDescription(description: string): TMemoryRecord;
     function getRecordWithID(id: integer): TMemoryRecord;
@@ -169,12 +170,15 @@ type
     procedure doValueChange;
 
     procedure disableAllWithoutExecute;
+    function getMouseHighlightedRecord: TMemoryRecord;
 
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     property Items: TTreeNodes read getTreeNodes write SetTreeNodes;
 
     procedure clear;
+
+    function getLoadedTableVersion: integer;
 
 
     property MemRecItems[Index: Integer]: TMemoryRecord read GetMemRecItemByIndex; default;
@@ -186,6 +190,7 @@ type
 
     property headers: THeaderControl read header;
   published
+    property LoadedTableVersion: integer read getLoadedTableVersion;
 
     property Count: Integer read GetCount;
     property SelCount: Integer read GetSelCount;
@@ -202,19 +207,19 @@ type
     property ExpandSignColor: TColor read fExpandSignColor write fExpandSignColor;
     property IncreaseArrowColor: TColor read fIncreaseArrowColor write fIncreaseArrowColor;
     property DecreaseArrowColor: TColor read fDecreaseArrowColor write fDecreaseArrowColor;
-
+    property MouseHighlightedRecord: TMemoryRecord read getMouseHighlightedRecord;
     property OnDescriptionChange: TMemRecChangeEvent read fOnDescriptionChange write fOnDescriptionChange;
     property OnAddressChange: TMemRecChangeEvent read fOnAddressChange write fOnAddressChange;
     property OnTypeChange: TMemRecChangeEvent read fOnTypeChange write fOnTypeChange;
     property OnValueChange: TMemRecChangeEvent read fOnValueChange write fOnValueChange;
     property OnAutoAssemblerEdit: TMemRecChangeEvent read fOnAutoAssemblerEdit write fOnAutoAssemblerEdit;
-
   end;
 
 implementation
 
 uses dialogs, formAddressChangeUnit, TypePopup, PasteTableentryFRM, MainUnit,
-  ProcessHandlerUnit, frmEditHistoryUnit, globals, Filehandler, ceregistry;
+  ProcessHandlerUnit, frmEditHistoryUnit, globals, Filehandler, ceregistry,
+  memrecDataStructures, opensave;
 
 resourcestring
   rsDoYouWantToDeleteTheSelectedAddress = 'Do you want to delete the selected address?';
@@ -282,6 +287,8 @@ begin
     if item<>nil then
       item.Free;
   end;
+
+  lastLoadedTableVersion:=CurrentTableVersion;
 end;
 
 procedure TAddresslist.RefreshCustomTypes;
@@ -473,7 +480,7 @@ begin
   if GetCurrentThreadId=MainThreadID then
   begin
     oldlogWrites:=logwrites;
-
+    logwrites:=false;
     //oldlogWrites:=false;
     blockfilehandlerpopup:=true;
   end;
@@ -739,6 +746,8 @@ begin
             end;
             currentEntry:=currentEntry.NextSibling;
           end;
+
+          rebuildDescriptionCache;
         end;
       end;
     finally
@@ -849,7 +858,7 @@ begin
   result:=descriptionhashlist.Data[description]
 end;
 
-function TAddresslist.addAddressManually(initialaddress: string=''; vartype: TVariableType=vtDword; CustomTypeName: string=''): TMemoryRecord;
+function TAddresslist.addAddressManually(initialaddress: string=''; vartype: TVariableType=vtDword; CustomTypeName: string=''; focusOnDescription: boolean=false): TMemoryRecord;
 var mr: TMemoryRecord;
     edited: boolean;
 begin
@@ -868,6 +877,9 @@ begin
   begin
     caption:=rsALAddAddress;
     memoryrecord:=mr;
+
+    focusDescription:=focusOnDescription;
+
     if showmodal<>mrok then
     begin
       mr.free; //not ok, delete
@@ -1006,6 +1018,18 @@ begin
   end;
 end;
 
+function TAddresslist.getMouseHighlightedRecord: TMemoryRecord;
+var
+  p: tpoint;
+  node: TTreenode;
+begin
+  p:=treeview.ScreenToClient(mouse.CursorPos);
+  node:=treeview.GetNodeAt(p.x,p.y);
+  if node<>nil then
+    result:=tmemoryrecord(node.Data)
+  else
+    result:=nil;
+end;
 
 procedure TAddresslist.disableAllWithoutExecute;
 var i: integer;
@@ -1102,6 +1126,8 @@ begin
       MemRecItems[i].VarType:=newtype;
       MemRecItems[i].Extra:=extra;
       MemRecItems[i].CustomTypeName:=customtypename;
+      MemRecItems[i].ShowAsSigned:=memrec.ShowAsSigned;
+      MemRecItems[i].ShowAsHex:=memrec.ShowAsHex;
 
       MemRecItems[i].treenode.update;
     end;
@@ -1122,53 +1148,59 @@ var
 
   frmMemrecCombobox: TfrmMemrecCombobox;
 begin
-  if memrec.DropDownCount=0 then
-  begin
-    value:=AnsiToUtf8(memrec.value);
+  try
+    if memrec.DropDownCount=0 then
+    begin
+      value:=AnsiToUtf8(memrec.value);
 
 
-    if memrec.VarType=vtString then
-      canceled:=not MultilineInputQuery(rsChangeValue, rsWhatValueToChangeThisTo, value)
+      if memrec.VarType=vtString then
+        canceled:=not MultilineInputQuery(rsChangeValue, rsWhatValueToChangeThisTo, value)
+      else
+        canceled:=not InputQuery(rsChangeValue, rsWhatValueToChangeThisTo, value);
+
+
+      value:=TrimRight(Utf8ToAnsi(value));
+    end
     else
-      canceled:=not InputQuery(rsChangeValue, rsWhatValueToChangeThisTo, value);
+    begin
+      frmMemrecCombobox:=TfrmMemrecCombobox.Create(memrec);
+      canceled:=frmMemrecCombobox.showmodal<>mrok;
+
+      if memrec.DropDownReadOnly and memrec.DropDownDescriptionOnly and memrec.DisplayAsDropDownListItem and (frmMemrecCombobox.value='*') then
+        canceled:=true;
+
+      if not canceled then
+        value:=utf8toansi(frmMemrecCombobox.value);
+
+      frmMemrecCombobox.free;
+    end;
+
+    if not canceled  then
+    begin
 
 
-    value:=TrimRight(Utf8ToAnsi(value));
-  end
-  else
-  begin
-    frmMemrecCombobox:=TfrmMemrecCombobox.Create(memrec);
-    canceled:=frmMemrecCombobox.showmodal<>mrok;
-
-    if memrec.DropDownReadOnly and memrec.DropDownDescriptionOnly and memrec.DisplayAsDropDownListItem and (frmMemrecCombobox.value='*') then
-      canceled:=true;
-
-    if not canceled then
-      value:=utf8toansi(frmMemrecCombobox.value);
-
-    frmMemrecCombobox.free;
-  end;
-
-  if not canceled  then
-  begin
-
-
-    allError:=true;
-    someError:=false;
-    for i:=0 to count-1 do
-      if memrecitems[i].isSelected then
-      begin
-        try
-          memrecitems[i].SetValue(value);
-          memrecitems[i].treenode.update;
-          allError:=false;
-        except
-          someError:=true;
+      allError:=true;
+      someError:=false;
+      for i:=0 to count-1 do
+        if memrecitems[i].isSelected then
+        begin
+          try
+            memrecitems[i].SetValue(value);
+            memrecitems[i].treenode.update;
+            allError:=false;
+          except
+            someError:=true;
+          end;
         end;
-      end;
 
-    if AllError then raise exception.create(Format(rsTheValueCouldNotBeParsed, [value]));
-    if SomeError then raise exception.create(Format(rsNotAllValueTypesCouldHandleTheValue, [value]));
+      if AllError then raise exception.create(Format(rsTheValueCouldNotBeParsed, [value]));
+      if SomeError then raise exception.create(Format(rsNotAllValueTypesCouldHandleTheValue, [value]));
+    end;
+
+  except
+    on e:Exception do
+      MessageDlg(e.message,mtError,[mbok],0);
   end;
 end;
 
@@ -1537,7 +1569,7 @@ begin
   activesortdirection:=not activesortdirection;
 end;
 
-function TAddresslist.descriptioncompare(_a: TTreenode; _b: TTreenode): integer;
+function TAddresslist.descriptioncomparecasesensitive(_a: TTreenode; _b: TTreenode): integer;
 var
   a,b: TMemoryRecord;
 begin
@@ -1555,13 +1587,36 @@ begin
     result:=-result;
 end;
 
+function TAddresslist.descriptioncompare(_a: TTreenode; _b: TTreenode): integer;
+var
+  a,b: TMemoryRecord;
+begin
+  if sortlevel0only and (_a.level<>0) and (_b.level<>0) then exit(0);
+
+  a:=TMemoryRecord(_a.data);
+  b:=TMemoryRecord(_b.data);
+  result:=0; //equal
+  if uppercase(b.description)>uppercase(a.description) then
+    result:=1;
+  if uppercase(b.description)<uppercase(a.description) then
+    result:=-1;
+
+  if not descriptionsortdirection then
+    result:=-result;
+end;
+
 procedure TAddresslist.sortByDescription;
 var n: TTreenode;
 begin
   if count=0 then exit;
 
   if treeview.Selected<>nil then n:=treeview.Selected else n:=treeview.Items[0];
-  sort(n, descriptioncompare, descriptionsortdirection);
+
+  if ssCtrl in GetKeyShiftState then
+    sort(n, descriptioncomparecasesensitive, descriptionsortdirection)
+  else
+    sort(n, descriptioncompare, descriptionsortdirection);
+
   descriptionsortdirection:=not descriptionsortdirection;
 end;
 
@@ -1617,6 +1672,8 @@ function TAddresslist.valuecompare(_a: TTreenode; _b: TTreenode): integer;
 var
   va, vb: double;
   a,b: TMemoryRecord;
+
+  s1,s2: widestring;
 begin
   if sortlevel0only and (_a.level<>0) and (_b.level<>0) then exit(0);
 
@@ -1625,15 +1682,26 @@ begin
   if not TryStrToFloat(a.value, va) then va:=0;
   if not TryStrToFloat(b.value, vb) then vb:=0;
 
-  result:=0;
-  if vb>va then
-    result:=1;
+  if (a.VarType in [vtString, vtUnicodeString]) and
+     (b.VarType in [vtString, vtUnicodeString]) then
+  begin
+    s1:=a.value;
+    s2:=b.value;
+    result:=strcomp(pwidechar(s1),pwidechar(s2));
+  end
+  else
+  begin
+    result:=0;
+    if vb>va then
+      result:=1;
 
-  if vb<va then
-    result:=-1;
+    if vb<va then
+      result:=-1;
+  end;
 
   if not valuesortdirection then
     result:=-result;
+
 end;
 
 
@@ -1928,6 +1996,8 @@ var
   bordersize: integer;
 
   tempstring: string;
+
+  c: Tcolor;
 begin
   //multiselect implementation
 
@@ -1976,9 +2046,9 @@ begin
     if memrec.isSelected then
     begin
       if node.Selected then
-        sender.Canvas.Brush.Color:=SelectedBackgroundColor //clHighlight
+        sender.Canvas.Brush.Color:=ColorToRGB(SelectedBackgroundColor)  //SelectedBackgroundColor //clHighlight
       else
-        sender.Canvas.Brush.Color:=SelectedSecondaryBackgroundColor; //clActiveCaption;
+        sender.Canvas.Brush.Color:=ColorToRGB(SelectedSecondaryBackgroundColor); //clActiveCaption;
 
       oldpenmode:=sender.Canvas.Pen.Mode;
       sender.Canvas.Pen.Mode:=pmMask;
@@ -1992,7 +2062,7 @@ begin
     if memrec.isSelected then
     begin
       sender.canvas.pen.color:=clWindowtext;
-      sender.Canvas.Font.Color:=InvertColor(memrec.Color)
+      sender.Canvas.Font.Color:=INVERTCOLOR(ColorToRGB(SelectedBackgroundColor));//  InvertColor(memrec.Color)
     end
     else
     begin
@@ -2281,6 +2351,11 @@ begin
   if not result then result:=treeview.Focused;
 end;
 
+function TAddresslist.getLoadedTableVersion: integer;
+begin
+  result:=lastLoadedTableVersion;
+end;
+
 procedure TAddresslist.getAddressList(list: Tstrings);
 {
 Gets the addresslist in lines formatted :  address=description
@@ -2437,6 +2512,7 @@ begin
   symhandler.AddFinishedLoadingSymbolsNotification(SymbolsLoaded);
 
 
+
   checkboxActiveSelectedColor:=clRed;
   CheckboxActiveColor:=clRed;
   CheckboxSelectedColor:=clWindowtext;
@@ -2446,6 +2522,7 @@ begin
   expandSignColor:=clWindowText;
   increaseArrowColor:=clGreen;
   decreaseArrowColor:=clRed;
+
 
 end;
 

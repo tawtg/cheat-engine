@@ -458,6 +458,7 @@ var luasyntaxStringHashList: TStringHashList;
 implementation
 
 uses
+  betterControls,
 {$IFDEF SYN_CLX}
   QSynEditStrConst, math;
 {$ELSE}
@@ -1877,7 +1878,10 @@ begin
 
   fKeyAttri := TSynHighLighterAttributes.Create(SYNS_AttrReservedWord);
   fKeyAttri.Style := [fsBold];
-  fKeyAttri.Foreground:=clBlue;
+  if ShouldAppsUseDarkMode() then
+    fKeyAttri.Foreground:=$ff7f00
+  else
+    fKeyAttri.Foreground:=clBlue;
   AddAttribute(fKeyAttri);
 
   fKeySecondaryAttri:= TSynHighLighterAttributes.Create(SYNS_AttrReservedWord2);
@@ -1898,7 +1902,11 @@ begin
   fInternalFunctionAttri := TSynHighLighterAttributes.Create(SYNS_AttrInternalFunction);
   fInternalFunctionAttri.Style := [fsBold];
   fInternalFunctionAttri.Foreground:=$c08000;
-  fInternalFunctionAttri.Background:=$eeeeee;
+  if ShouldAppsUseDarkMode=false then
+    fInternalFunctionAttri.Background:=$eeeeee
+  else
+    fInternalFunctionAttri.Background:=$333333;
+
   AddAttribute(fInternalFunctionAttri);
 
   fLuaMStringAttri := TSynHighLighterAttributes.Create(SYNS_AttrLuaMString);
@@ -1906,7 +1914,12 @@ begin
   AddAttribute(fLuaMStringAttri);
 
   fNumberAttri := TSynHighLighterAttributes.Create(SYNS_AttrNumber);
-  fNumberAttri.Foreground := $f00000;
+  if ShouldAppsUseDarkMode=false then
+    fNumberAttri.Foreground := $f00000
+  else
+    fNumberAttri.Foreground := $f05028;
+
+
   AddAttribute(fNumberAttri);
 
   fHexAttri := TSynHighLighterAttributes.Create(SYNS_AttrHexadecimal);
@@ -2152,6 +2165,7 @@ begin
   reg:=tregistry.create;
   reg.RootKey:=Rootkey;
   result:=false;
+
   if reg.OpenKey(Key,false) then
   begin
     result:=true;

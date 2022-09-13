@@ -15,8 +15,13 @@ else
   libfolder='dylibs'
 end
 
+local dpiscale=getScreenDPI()/96
+
+--[[local]] monocache={}
 
 mono_timeout=3000 --change to 0 to never timeout (meaning: 0 will freeze your face off if it breaks on a breakpoint, just saying ...)
+
+MONO_DATACOLLECTORVERSION=22082022;
 
 MONOCMD_INITMONO=0
 MONOCMD_OBJECT_GETCLASS=1
@@ -62,8 +67,13 @@ MONOCMD_ISIL2CPP=38
 MONOCMD_FILLOPTIONALFUNCTIONLIST=39
 MONOCMD_GETSTATICFIELDVALUE=40 --fallback for il2cpp which doesn't expose what's needed
 MONOCMD_SETSTATICFIELDVALUE=41
-
 MONOCMD_GETCLASSIMAGE=42
+MONOCMD_FREE=43
+MONOCMD_GETIMAGEFILENAME=44
+MONOCMD_GETCLASSNESTINGTYPE=45
+MONOCMD_LIMITEDCONNECTION=46
+MONOCMD_GETMONODATACOLLECTORVERSION=47
+
 
 MONO_TYPE_END        = 0x00       -- End of List
 MONO_TYPE_VOID       = 0x01
@@ -175,6 +185,184 @@ MONO_TYPE_NAME_FORMAT_REFLECTION=1
 MONO_TYPE_NAME_FORMAT_FULL_NAME=2
 MONO_TYPE_NAME_FORMAT_ASSEMBLY_QUALIFIED=3
 
+function mono_clearcache()
+  monocache={}
+  monocache.processid=getOpenedProcessID()
+end
+
+function createMethodInvokedialog(name, parameters, okclickfunction, customAddress, address)
+  local mifinfo={}
+  mifinfo.mif=createForm(false)
+  mifinfo.mif.position='poScreenCenter'
+  mifinfo.mif.borderStyle='bsSizeable'
+  
+  mifinfo.mif.Caption=translate('Invoke ')..name
+
+  if customAddress then
+    mifinfo.lblInstanceAddress=createLabel(mifinfo.mif)
+    mifinfo.lblInstanceAddress.Caption=translate('Instance address')  
+    mifinfo.cbInstance=createComboBox(mifinfo.mif)
+  end
+  
+  mifinfo.gbParams=createGroupBox(mifinfo.mif)
+  mifinfo.gbParams.Caption=translate('Parameters')
+
+  mifinfo.gbParams.AutoSize=true
+
+  mifinfo.pnlButtons=createPanel(mifinfo.mif)
+  mifinfo.pnlButtons.ChildSizing.ControlsPerLine=2
+  mifinfo.pnlButtons.ChildSizing.Layout='cclLeftToRightThenTopToBottom'
+
+  mifinfo.pnlButtons.BevelOuter='bvNone'
+  mifinfo.pnlButtons.BorderSpacing.Top=5
+  mifinfo.pnlButtons.BorderSpacing.Bottom=5
+  mifinfo.pnlButtons.ChildSizing.HorizontalSpacing=8
+
+
+  mifinfo.btnOk=createButton(mifinfo.mif)
+  mifinfo.btnCancel=createButton(mifinfo.mif)
+
+  mifinfo.btnOk.Parent=mifinfo.pnlButtons
+  mifinfo.btnCancel.Parent=mifinfo.pnlButtons
+
+  mifinfo.pnlButtons.AutoSize=true
+
+  mifinfo.btnOk.caption=translate('OK')
+  mifinfo.btnCancel.caption=translate('Cancel')
+  mifinfo.btnCancel.Cancel=true
+
+
+  mifinfo.pnlButtons.AnchorSideBottom.Control=mifinfo.mif
+  mifinfo.pnlButtons.AnchorSideBottom.Side=asrBottom
+  mifinfo.pnlButtons.AnchorSideLeft.Control=mifinfo.mif
+  mifinfo.pnlButtons.AnchorSideLeft.Side=asrCenter
+  mifinfo.pnlButtons.Anchors='[akLeft, akBottom]'
+ -- mifinfo.pnlButtons.Color=clRed
+
+
+  if customAddress then
+    mifinfo.lblInstanceAddress.AnchorSideTop.Control=mifinfo.mif
+    mifinfo.lblInstanceAddress.AnchorSideTop.Side=asrTop
+    mifinfo.lblInstanceAddress.AnchorSideTop.Left=mifinfo.mif
+    mifinfo.lblInstanceAddress.AnchorSideTop.Side=asrLeft
+    mifinfo.cbInstance.AnchorSideTop.Control=mifinfo.lblInstanceAddress
+    mifinfo.cbInstance.AnchorSideTop.Side=asrBottom
+    
+    mifinfo.cbInstance.AnchorSideLeft.Control=mifinfo.mif
+    mifinfo.cbInstance.AnchorSideLeft.Side=asrLeft
+    mifinfo.cbInstance.AnchorSideRight.Control=mifinfo.mif
+    mifinfo.cbInstance.AnchorSideRight.Side=asrRight
+    mifinfo.cbInstance.Anchors='[akLeft, akRight, akTop]'
+    mifinfo.cbInstance.BorderSpacing.Left=2*dpiscale
+    mifinfo.cbInstance.BorderSpacing.Right=2*dpiscale
+    
+    mifinfo.gbParams.AnchorSideTop.Control=mifinfo.cbInstance
+    mifinfo.gbParams.AnchorSideTop.Side=asrBottom    
+  else
+    mifinfo.gbParams.AnchorSideTop.Control=mifinfo.mif
+    mifinfo.gbParams.AnchorSideTop.Side=asrTop      
+  end
+
+  mifinfo.gbParams.AnchorSideLeft.Control=mifinfo.mif
+  mifinfo.gbParams.AnchorSideLeft.Side=asrLeft
+  mifinfo.gbParams.AnchorSideRight.Control=mifinfo.mif
+  mifinfo.gbParams.AnchorSideRight.Side=asrRight
+  mifinfo.gbParams.AnchorSideBottom.Control=mifinfo.pnlButtons
+  mifinfo.gbParams.AnchorSideBottom.Side=asrTop
+
+  mifinfo.gbParams.Anchors='[akLeft, akRight, akTop, akBottom]'
+
+  mifinfo.mif.AutoSize=true
+
+  mifinfo.parameters={}
+  local i
+  for i=1, #parameters do
+    local lblVarName=createLabel(mifinfo.mif)
+    local edtVarText=createEdit(mifinfo.mif)
+
+    lblVarName.Parent=mifinfo.gbParams
+    edtVarText.Parent=mifinfo.gbParams
+    
+    lblVarName.AnchorSideLeft.Control=mifinfo.gbParams
+    lblVarName.AnchorSideLeft.Side=asrLeft
+    lblVarName.BorderSpacing.Left=2*dpiscale
+       
+    lblVarName.AnchorSideTop.Control=edtVarText
+    lblVarName.AnchorSideTop.Side=asrCenter
+    
+    if i==1 then
+      edtVarText.AnchorSideTop.Control=mifinfo.gbParams
+      edtVarText.AnchorSideTop.Side=asrTop      
+      edtVarText.AnchorSideLeft.Control=mifinfo.gbParams
+      edtVarText.AnchorSideLeft.Side=asrLeft      
+      --borderspacing.Left will set the position      
+    else
+      edtVarText.AnchorSideTop.Control=mifinfo.parameters[i-1].edtVarText
+      edtVarText.AnchorSideTop.Side=asrBottom
+      edtVarText.AnchorSideLeft.Control=mifinfo.parameters[i-1].edtVarText
+      edtVarText.AnchorSideLeft.Side=asrLeft --same position as the top (which gets set later)
+    end
+    edtVarText.BorderSpacing.Top=2*dpiscale    
+    edtVarText.AnchorSideRight.Control=mifinfo.gbParams
+    edtVarText.AnchorSideRight.Side=asrRight
+    edtVarText.BorderSpacing.Right=2*dpiscale
+
+    edtVarText.Anchors='[akLeft, akRight, akTop]'
+
+    
+
+    lblVarName.Caption=parameters[i]:trim()
+
+    mifinfo.parameters[i]={}
+    mifinfo.parameters[i].lblVarName=lblVarName
+    mifinfo.parameters[i].edtVarText=edtVarText
+
+    lblVarName.BorderSpacing.CellAlignVertical='ccaCenter'
+  end
+
+  mifinfo.btnOk.OnClick=okclickfunction
+
+  mifinfo.btnCancel.OnClick=function(b) mifinfo.mif.close() end
+
+
+  mifinfo.mif.OnShow=function(s)
+    idf=s
+    if #mifinfo.parameters>0 then      
+      local labelwidth=0
+      local i
+      for i=1,#parameters do --get the min width needed
+        labelwidth=math.max(labelwidth, mifinfo.parameters[i].lblVarName.Width)
+      end
+      
+      mifinfo.parameters[1].edtVarText.BorderSpacing.Left=labelwidth+7*dpiscale
+    end
+  end
+
+  mifinfo.mif.onClose=function(f)
+    return caFree
+  end
+
+  mifinfo.mif.onDestroy=function(f)
+    --destroy all objects
+    mifinfo.btnOk.destroy()
+    mifinfo.btnOk=nil
+    
+    mifinfo.btnCancel.destroy()
+    mifinfo.btnCancel=nil
+
+    if mifinfo.cbInstance then
+      mifinfo.cbInstance.destroy()
+      mifinfo.cbInstance=nil
+    end
+    
+    mifinfo.gbParams.destroy()
+    mifinfo.gbParams=nil
+
+    mifinfo=nil
+  end  
+  
+  return mifinfo  
+end
 
 
 function monoTypeToVarType(monoType)
@@ -236,6 +424,9 @@ function monoIL2CPPSymbolEnum(t)
   local images={}
   local assemblies=mono_enumAssemblies() 
   
+  monoSymbolList.IL2CPPSymbolEnumProgress=0
+  
+  
   if assemblies then
     for i=1,#assemblies do      
       images[i]={}
@@ -252,23 +443,28 @@ function monoIL2CPPSymbolEnum(t)
   if monopipe==nil or t.Terminated then return end
   
   if priority then
-    print("parsing "..images[priority].name..'(1/'..#images..')');
-  
     parseImage(t, images[priority])
+    monoSymbolList.IL2CPPSymbolEnumProgress=(1/#assemblies) * 100
   end
   if monopipe==nil or t.Terminated then return end
   
   for i=1,#images do
     local x=i
     
-    if priority then x=x+1 end
+    if i~=priority then        
+      parseImage(t, images[i])
+    end
     
-    print("parsing "..images[i].name..'('..x..'/'..#images..')');
-    parseImage(t, images[i])
+    if priority then
+      monoSymbolList.IL2CPPSymbolEnumProgress=((i-1)/#assemblies) * 100    
+    else
+      monoSymbolList.IL2CPPSymbolEnumProgress=(i/#assemblies) * 100
+    end
+    
     if monopipe==nil or t.Terminated then return end
   end
 
-  print("all symbols loaded") --print is threadsafe
+  --print("all symbols loaded") --print is threadsafe
   monoSymbolList.FullyLoaded=true
 end
 
@@ -339,7 +535,23 @@ function fillMissingFunctions()
   return result
 end
 
-function LaunchMonoDataCollector()
+local lastMonoError
+
+function mono_connectionmode2()
+  monopipe.lock()
+  monopipe.writeByte(MONOCMD_LIMITEDCONNECTION)
+  monopipe.unlock()
+end
+
+
+function LaunchMonoDataCollector(internalReconnectDisconnectEachTime)
+  if debug_isBroken() then
+    if inMainThread() then   
+      messageDialog(translate('You can not use this while the process is frozen'), mtError, mbOK)
+    end
+    return nil
+  end
+  
   --if debug_canBreak() then return 0 end
   
   if monoSymbolEnum then
@@ -428,7 +640,7 @@ function LaunchMonoDataCollector()
       local serverpipe=createPipe('cemonodc_pid'..getOpenedProcessID(), 256*1024,1024)      
       local newhandle=duplicateHandle(serverpipe.Handle)
       serverpipe.destroy() --the old handle is not needed anymore
-      print("New pipe handle is "..newhandle)
+      --print("New pipe handle is "..newhandle)
       
       writeInteger(getAddressSafe("MDC_ServerPipe"), newhandle)      
     end
@@ -440,12 +652,25 @@ function LaunchMonoDataCollector()
     return 0 --failure
   end
   
+  local v=mono_getMonoDatacollectorDLLVersion();
+  if (v==nil) or (v~=MONO_DATACOLLECTORVERSION) then
+    local s='There is an inconsistency with the monodatacollector dll and monoscript.lua . Unexpected behaviour and crashes are to be expected'
+    if inMainThread then
+      messageDialog(s, mtWarning)
+    else
+      print('Warning:'..s)
+    end
+  end
+    
+  
   monopipe.OnError=function(self)
-    print("monopipe error")
+    --print("monopipe error")
+    monopipe.OnTimeout(self)
   end
 
   monopipe.OnTimeout=function(self)  
-    --print("monopipe timeout")
+    --print("monopipe disconnected")
+    
     local oldmonopipe=monopipe
     monopipe=nil
     mono_AttachedProcess=0
@@ -458,7 +683,7 @@ function LaunchMonoDataCollector()
     if inMainThread() and monoSymbolEnum then
       monoSymbolEnum.terminate()    
       monoSymbolEnum.waitfor()
-      print("terminating monoSymbolEnum due to timeout")
+      print("terminating monoSymbolEnum due to timeout or error")
       monoSymbolEnum.destroy()
       monoSymbolEnum=nil
     end
@@ -470,6 +695,23 @@ function LaunchMonoDataCollector()
       unregisterStructureAndElementListCallback(StructureElementCallbackID)
       StructureElementCallbackID=nil
     end
+    
+    if (lastMonoError==nil) or (getTickCount()>lastMonoError+200) then  
+      --print("monopipe error. Reattaching in 500 ms")
+      --auto re-attach after error
+      --createTimer(200,function()
+        --print("Reattaching")
+     --   LaunchMonoDataCollector()    
+      --end)      
+    --else
+    --  print("monopipe error. Last reattach too soon. Giving up")
+    end
+    
+    
+
+    
+    lastMonoError=getTickCount()
+    
   end
 
   --in case you implement the profiling tools use a secondary pipe to receive profiler events
@@ -507,9 +749,7 @@ function LaunchMonoDataCollector()
 
   end
 
-  if (monoSettings==nil) then
-    monoSettings=getSettings("MonoExtension")  
-  end
+
   
   StructureElementCallbackID=registerStructureAndElementListCallback(mono_StructureListCallback, mono_ElementListCallback)
 
@@ -520,17 +760,93 @@ function LaunchMonoDataCollector()
       monoSymbolList=createSymbolList()
       monoSymbolList.register() 
       monoSymbolList.ProcessID=getOpenedProcessID()
-      monoSymbolList.FullyLoaded=false        
+      monoSymbolList.FullyLoaded=false   
+      monoSymbolList.IL2CPPSymbolEnumProgress=0
       monoSymbolEnum=createThread(monoIL2CPPSymbolEnum)
+      
+      createTimer(500,function()
+        --print("0.5 second delayed timer running now")
+        if monoSymbolList.FullyLoaded==false then
+          --show a progressbar in CE                  
+          if monoSymbolList.progressbar then         
+            monoSymbolList.progressbar.destroy()
+            monoSymbolList.progressbar=nil
+          end
+          
+          local pb=monoSymbolList.progressbar
+          
+          pb=createProgressBar(MainForm.Panel4)
+          pb.Align=alBottom
+          pb.Max=100
 
+          local pbl=createLabel(pb)
+          pbl.Caption=translate('IL2CPP symbol enum: 0%')
+          pbl.AnchorSideLeft.Control=pb
+          pbl.AnchorSideLeft.Side=asrCenter
+
+          pbl.AnchorSideTop.Control=pb
+          pbl.AnchorSideTop.Side=asrCenter
+
+          pb.Height=pbl.Height 
+          monoSymbolList.progressbar=pb
+          local t=createTimer(pb)
+          t.enabled=true         
+          t.interval=250        
+          t.OnTimer=function()
+            --print("Check progress")
+            pb.Position=math.ceil(monoSymbolList.IL2CPPSymbolEnumProgress)
+    
+            pbl.Caption=string.format("IL2CPP symbol enum: %.f%%",monoSymbolList.IL2CPPSymbolEnumProgress)
+            if monoSymbolList.FullyLoaded then
+              --print("done. Turning off check timer, and starting cleanup timer in 1.5 seconds")
+              t.enabled=false
+              
+              pb.Position=100
+              pbl.Caption=string.format("IL2CPP symbol enum: Done"); --enum done. Now wait 1.5 seconds and then delete the bar 
+              
+              createTimer(1500,function()
+                --print("cleanup timer that runs after 1.5 seconds. destroying progressbar")                             
+                pb.destroy() --also destroys t
+              end)
+            end
+          end
+        end
+      end)
     end
   end
   
   if getOperatingSystem()==1 then
     --mac sometimes doesn't export mono_type_get_name_full but the symbol is defined. CE can help with this
     fillMissingFunctions()
+    
+    
+    monopipe.AntiIdleThread=createTimer()
+      --in some games on the mac version the mainthread freezes when the thread is suspended/idle and not really sure why. fetching the domains resumes the game
+      if monopipe then
+        monopipe.AntiIdleThread.Interval=50
+        monopipe.AntiIdleThread.OnTimer=function(t)
+          mono_enumDomains()
+        end
+      else
+        t.destroy()
+      end
   end
   
+  if internalReconnectDisconnectEachTime==nil then --old scripts don't give the parameter
+    
+    
+    if AddressList.LoadedTableVersion and AddressList.LoadedTableVersion<=40 then
+      internalReconnectDisconnectEachTime=false --old behaviour
+    else
+      internalReconnectDisconnectEachTime=true
+    end
+  end
+  
+  if internalReconnectDisconnectEachTime then
+    mono_connectionmode2() --Change the behaviour from always connected to the mono runtime to only issuing a command, attach the handler thread to the mono runtime, and afterwards disconnect the thread from the mono runtime
+  end 
+
+  mono_clearcache()  
   
   return monoBase
 end
@@ -588,16 +904,12 @@ function mono_structureNameLookupCallback(address)
   end
 end
 
-
-function mono_symbolLookupCallback(symbol)
-  --if debug_canBreak() then return nil end
-
-  if monopipe == nil then return nil end  
-  if monopipe.IL2CPP then return nil end
-
+function mono_splitSymbol(symbol)
+  local result=nil
+  
   local parts={}
   local x
-  for x in string.gmatch(symbol, "[^:]+") do
+  for x in string.gmatch(symbol, "[^:.]+") do
     table.insert(parts, x)
   end
 
@@ -606,14 +918,52 @@ function mono_symbolLookupCallback(symbol)
   local namespace=''
 
   if (#parts>0) then
-    methodname=parts[#parts]
+    methodname=(symbol:find("[:.]%.cc?tor$") ~= nil and '.' or '')..parts[#parts] --methodname=parts[#parts]    
     if (#parts>1) then
       classname=parts[#parts-1]
       if (#parts>2) then
-        namespace=parts[#parts-2]
+        for x=1,#parts-2 do
+          if x==1 then
+            namespace=parts[x]
+          else
+            namespace=namespace..'.'..parts[x]
+          end
+        end
       end
     end
   end
+  --[[
+  if (methodname=='ctor' and symbol.endswith('.ctor')) or
+     (methodname=='cctor' and symbol.endswith('.cctor')) then
+     methodname='.'..methodname
+  end--]]
+  
+  
+  result={}
+  result.methodname=methodname
+  result.classname=classname
+  result.namespace=namespace  
+  
+  return result
+end
+
+function mono_symbolLookupCallback(symbol)
+  --if debug_canBreak() then return nil end
+
+  if monopipe == nil then return nil end  
+  if monopipe.IL2CPP then return nil end
+
+  if symbol:match('[()%[%]]')~=nil then return nil end --no formulas/indexer
+
+  
+  local methodname=''
+  local classname=''
+  local namespace=''
+  
+  local ss=mono_splitSymbol(symbol)
+  methodname=ss.methodname
+  classname=ss.classname
+  namespace=ss.namespace
 
   if (methodname~='') and (classname~='') then
     local method=mono_findMethod(namespace, classname, methodname)
@@ -640,7 +990,9 @@ function mono_addressLookupCallback(address)
   --end
   if monopipe==nil then return nil end
   if monopipe.IL2CPP then return nil end
-
+  
+  if debug_isBroken() then return nil end
+  if tonumber(monopipe.ProcessID)~=getOpenedProcessID() then return nil end
 
   local ji=mono_getJitInfo(address)
   local result=''
@@ -664,8 +1016,13 @@ function mono_addressLookupCallback(address)
       if namespace~='' then
         namespace=namespace..':'
       end
-
-      result=namespace..classname..":"..mono_method_getName(ji.method)
+      
+      if mono_class_getNestingType(class) then
+        result=mono_class_getFullName(class)..":"..mono_method_getName(ji.method)            
+      else
+        result=namespace..classname..":"..mono_method_getName(ji.method)      
+      end      
+      
       if address~=ji.code_start then
         result=result..string.format("+%x",address-ji.code_start)
       end
@@ -686,6 +1043,7 @@ function mono_object_getClass(address)
 
   local classaddress=monopipe.readQword()
   if (classaddress~=nil) and (classaddress~=0) then
+    if monopipe==nil then return nil end
     local stringlength=monopipe.readWord()
     local classname
 
@@ -727,6 +1085,8 @@ function mono_enumDomains()
   if monopipe==nil then return nil end
   
   monopipe.writeByte(MONOCMD_ENUMDOMAINS)  
+  if monopipe==nil then return nil end
+  
   local count=monopipe.readDword()
   if monopipe==nil then return nil end
   
@@ -744,6 +1104,19 @@ function mono_enumDomains()
 
   return result
 end
+
+function mono_getMonoDatacollectorDLLVersion()
+  local r=nil
+  monopipe.lock()
+  monopipe.writeByte(MONOCMD_GETMONODATACOLLECTORVERSION)
+  r=monopipe.readDword()  
+  if monopipe then
+    monopipe.unlock()
+  end
+  
+  return r
+end
+
 
 function mono_setCurrentDomain(domain)
   --if debug_canBreak() then return nil end
@@ -790,6 +1163,7 @@ function mono_getImageFromAssembly(assembly)
 end
 
 function mono_image_get_name(image)
+  if image==nil then return nil,'invalid image' end
   --if debug_canBreak() then return nil end
 
   if monopipe==nil then return nil end  
@@ -799,11 +1173,33 @@ function mono_image_get_name(image)
   monopipe.writeByte(MONOCMD_GETIMAGENAME)
   monopipe.writeQword(image)
   local namelength=monopipe.readWord()
+  local name
+  
+  if monopipe then
+    name=monopipe.readString(namelength)
+    monopipe.unlock()
+  end
+
+  return name
+end
+
+function mono_image_get_filename(image)
+  --if debug_canBreak() then return nil end
+
+  if monopipe==nil then return nil end  
+  monopipe.lock()
+  if monopipe==nil then return nil end
+  
+  monopipe.writeByte(MONOCMD_GETIMAGEFILENAME)
+  monopipe.writeQword(image)
+  local namelength=monopipe.readWord()
   local name=monopipe.readString(namelength)
 
   monopipe.unlock()
   return name
 end
+
+
 
 function mono_isValidName(str)
   local r=string.find(str, "[^%a%d_.]", 1)
@@ -920,6 +1316,11 @@ function mono_image_enumClasses(image)
 end
 
 function mono_class_isgeneric(class)
+  if class==nil then
+    print("mono_class_isgeneric with null pointer: ")
+    print(debug.traceback())
+    return nil
+  end
   local result=''
   monopipe.lock()
   monopipe.writeByte(MONOCMD_ISCLASSGENERIC)
@@ -938,11 +1339,39 @@ function mono_isil2cpp(class)
   result=monopipe.readByte()==1
 
   monopipe.unlock()
-  return result;
+  return result
+end
+
+
+function mono_class_getNestingType(class)
+  --returns the parent class if nested. 0 if not nested
+  
+  if (class==nil) or (class==0) then 
+    print("mono_class_getNestingType received an invalid class")
+    print(debug.traceback())
+    return nil
+  end
+  
+  local result
+  monopipe.lock()
+  monopipe.writeByte(MONOCMD_GETCLASSNESTINGTYPE)  
+  monopipe.writeQword(class)
+  result=monopipe.readQword()
+  if monopipe==nil then
+    print("mono_class_getNestingType crashed:")
+    print(debug.traceback())
+    return nil
+  end
+  monopipe.unlock()
+  
+  return result
 end
 
 function mono_class_getName(class)
-  --if debug_canBreak() then return nil end
+  --if debug_canBreak() then return nil end\
+  if (class==nil) or (class==0) then     
+    return ''
+  end
 
   local result=''
   monopipe.lock()
@@ -950,20 +1379,25 @@ function mono_class_getName(class)
   monopipe.writeQword(class)
 
   local namelength=monopipe.readWord();
-  result=monopipe.readString(namelength);
+  if monopipe then  
+    result=monopipe.readString(namelength);
 
-  monopipe.unlock()
-  return result;
+    monopipe.unlock()
+  end
+  return result
 end
 
 
-function mono_class_getNamespace(clasS)
+function mono_class_getNamespace(class)
   --if debug_canBreak() then return nil end
+  if (class==nil) or (class==0) then     
+    return ''
+  end  
 
   local result=''
   monopipe.lock()
   monopipe.writeByte(MONOCMD_GETCLASSNAMESPACE)
-  monopipe.writeQword(clasS)
+  monopipe.writeQword(class)
 
   local namelength=monopipe.readWord();
   result=monopipe.readString(namelength);
@@ -1008,6 +1442,17 @@ function mono_class_getParent(class)
   return result;
 end
 
+function mono_class_getImage(class)
+  local result=0
+  monopipe.lock()
+  monopipe.writeByte(MONOCMD_GETCLASSIMAGE)
+  monopipe.writeQword(class)  
+  result=monopipe.readQword()
+  monopipe.unlock()
+  return result;   
+end
+
+
 function mono_type_getClass(monotype)
   --if debug_canBreak() then return nil end
 
@@ -1043,8 +1488,14 @@ function mono_class_getVTable(domain, klass)
     domain=nil
   end
   
+  if not monopipe then return nil end
+  
   if monopipe.IL2CPP then
     return klass
+  end
+  
+  if klass==nil then
+    return nil,"No class provided"
   end
   
   
@@ -1055,17 +1506,36 @@ function mono_class_getVTable(domain, klass)
   monopipe.writeQword(klass)
   
   result=monopipe.readQword()
-  
-  monopipe.unlock()
+  if monopipe then
+    monopipe.unlock()
+  end
   return result  
 end
 
 
 --todo for the instance scanner: Get the fields and check that pointers are either nil or point to a valid address
-function mono_class_findInstancesOfClassListOnly(domain, klass)
+function mono_class_findInstancesOfClassListOnly(domain, klass, progressBar)
+
+  if debugInstanceLookup then 
+    if progressBar then
+      printf("progressBar is set. progressBar.ClassName=%s", progressBar.ClassName)
+    end
+  
+    print("mono_class_findInstancesOfClassListOnly")     
+  end
+
   local vtable=mono_class_getVTable(domain, klass)
+  if debugInstanceLookup then 
+    if vtable then
+      printf("vtable is %x", vtable)
+    else
+      print("vtable is nil") 
+    end
+  end
+
+  
   if (vtable) and (vtable~=0) then
-    local ms=createMemScan()  
+    local ms=createMemScan(progressBar)  
     local scantype=vtDword
     if targetIs64Bit() then
       scantype=vtQword
@@ -1073,7 +1543,10 @@ function mono_class_findInstancesOfClassListOnly(domain, klass)
     
     ms.firstScan(soExactValue,scantype,rtRounded,string.format('%x',vtable),'', 0,0x7ffffffffffffffff, '', fsmAligned, "8",true, true,false,false)
 
-    ms.waitTillDone()  
+    ms.waitTillDone() 
+    if debugInstanceLookup then     
+      print("after ms.waitTillDone")
+    end
     
     local fl=createFoundList(ms)
     fl.initialize()
@@ -1084,8 +1557,13 @@ function mono_class_findInstancesOfClassListOnly(domain, klass)
       result[i+1]=tonumber('0x'..fl[i])
     end
     
+    if debugInstanceLookup then print("Destroying fl and ms") end
+    
     fl.destroy()    
-    ms.destroy()    
+    ms.destroy()  
+    if debugInstanceLookup then 
+      printf("end of mono_class_findInstancesOfClassListOnly with valid vtable. #result=%d", #result)    
+    end
     
     return result
   end
@@ -1343,6 +1821,8 @@ end
 
 function mono_class_getStaticFieldAddress(domain, class)
   --if debug_canBreak() then return nil end
+  if not monopipe then return nil end
+  
 
   if (class==nil)  and domain then
     class=domain
@@ -1491,6 +1971,8 @@ end
 
 function mono_getJitInfo(address)
   --if debug_canBreak() then return nil end
+  
+  if monopipe==nil then return nil end
 
   local d=mono_enumDomains()
   if (d~=nil) then
@@ -1522,6 +2004,8 @@ function mono_getJitInfo(address)
 end
 
 function mono_getStaticFieldValue(vtable, field)
+  if not monopipe then return nil end
+  
   local r
   monopipe.lock()
   monopipe.writeByte(MONOCMD_GETSTATICFIELDVALUE)
@@ -1636,23 +2120,31 @@ function mono_image_findClassSlow(image, namespace, classname)
 
 --find a class in a specific image
   local result=0
-  
+
   if monopipe==nil then return 0 end
-  
-  
- 
-    
 
   monopipe.lock()
+
+  local fullnamerequested=classname:find("+") ~= nil
 
   local c=mono_image_enumClasses(image)
   if c then
     local i
     for i=1, #c do
       --check that classname is in c[i].classname
-      if c[i].classname==classname then
-        result=c[i].class
-        break;
+      if fullnamerequested then
+        local cname=mono_class_getFullName(c[i].class)
+        local r=mono_splitSymbol(cname)
+
+        if r.methodname==classname then --methodname is classname in this context
+          result=c[i].class
+          break
+        end
+      else
+        if c[i].classname==classname then
+          result=c[i].class
+          break;
+        end
       end
     end
 
@@ -1667,20 +2159,35 @@ function mono_findClass(namespace, classname)
 
 --searches all images for a specific class
  -- print(string.format("mono_findClass: namespace=%s classname=%s", namespace, classname))
+  
+  local i
+  if namespace and classname==nil then  --user forgot namespace    
+    classname=namespace
+    namespace=''
+  end
+  
+  if namespace==nil or classname==nil then
+    return nil,'invalid parameters'
+  end
+  
+  if monocache and (monocache.processid==getOpenedProcessID()) and monocache.nonfoundclasses and monocache.nonfoundclasses[namespace..'.'..classname] then
+    return nil
+  end
+  
 
   local ass=mono_enumAssemblies()
   local result
   
   if ass==nil then return nil end
 
-  for i=1, #ass do
-
-    result=mono_image_findClass(mono_getImageFromAssembly(ass[i]), namespace, classname)
-    if (result~=0) then
-      return result;
+  local fullnamerequested=classname:find("+") ~= nil
+  if fullnamerequested==false then
+    for i=1, #ass do
+      result=mono_image_findClass(mono_getImageFromAssembly(ass[i]), namespace, classname)
+      if (result~=0) then
+        return result;
+      end
     end
-
-
   end
 
   --still here:
@@ -1691,8 +2198,13 @@ function mono_findClass(namespace, classname)
       return result;
     end
   end  
-
-
+  
+  --not found
+  if monocache==nil then mono_clearcache() end  
+  if monocache.nonfoundclasses==nil then
+    monocache.nonfoundclasses={}
+  end
+  monocache.nonfoundclasses[namespace..'.'..classname]=true
   return nil
 end
 
@@ -1719,6 +2231,17 @@ end
 
 function mono_findMethod(namespace, classname, methodname)
   --if debug_canBreak() then return nil end
+  if methodname==nil then
+    if namespace and classname then
+      methodname=classname
+      classname=namespace
+      namespace=''
+    end  
+  end
+  
+  if namespace==nil or classname==nil or methodname==nil then
+    return nil,'invalid parameters'
+  end
 
   local class=mono_findClass(namespace, classname)
   local result=0
@@ -1730,7 +2253,7 @@ function mono_findMethod(namespace, classname, methodname)
 end
 
 
-function mono_class_findMethodByDesc(image, methoddesc)
+function mono_image_findMethodByDesc(image, methoddesc)
   --if debug_canBreak() then return nil end
 
   if image==nil then return 0 end
@@ -1749,18 +2272,37 @@ function mono_class_findMethodByDesc(image, methoddesc)
 
   return result
 end
+mono_class_findMethodByDesc=mono_image_findMethodByDesc --for old scripts that use this when it was wrongly named
+
 
 function mono_findMethodByDesc(assemblyname, methoddesc)
   --if debug_canBreak() then return nil end
+  if assemblyname==nil then return nil,'assemblyname is nil' end  
+  if methoddesc==nil then return nil,'methoddesc is nil' end
+
   local assemblies = mono_enumAssemblies()
+  if assemblies==nil then return nil, 'no assemblies' end
+  local i
+
   for i=1, #assemblies do
     local image = mono_getImageFromAssembly(assemblies[i])
     local imagename = mono_image_get_name(image)
     if imagename == assemblyname then
-      return mono_class_findMethodByDesc(image, methoddesc)  
+      return mono_image_findMethodByDesc(image, methoddesc)  
     end      
   end
+  
+  --still here, try case insensitive assembly names
+  assemblyname=assemblyname:lower()
+  for i=1, #assemblies do
+    local image = mono_getImageFromAssembly(assemblies[i])
+    local imagename = mono_image_get_name(image):lower()
+    if imagename == assemblyname then
+      return mono_image_findMethodByDesc(image, methoddesc)  
+    end      
+  end  
   return nil
+  
 end
 
 
@@ -1859,6 +2401,8 @@ function mono_method_getSignature(method)
   monopipe.writeQword(method)
 
   local paramcount=monopipe.readByte()
+  if paramcount==nil then return nil end --invalid method (monopipe is likely dead now)
+  
   local i
   
   for i=1, paramcount do
@@ -1937,14 +2481,17 @@ function mono_compile_method(method) --Jit a method if it wasn't jitted yet
   --if debug_canBreak() then return nil end
 
   --print(string.format("mono_compile_method. Method=%x", method))
+  if monopipe then
+    monopipe.lock()
 
-  monopipe.lock()
-
-  monopipe.writeByte(MONOCMD_COMPILEMETHOD)
-  monopipe.writeQword(method)
-  local result=monopipe.readQword()
-  monopipe.unlock()
-  return result
+    monopipe.writeByte(MONOCMD_COMPILEMETHOD)
+    monopipe.writeQword(method)
+    local result=monopipe.readQword()
+    if monopipe then
+      monopipe.unlock()
+    end
+    return result
+  end
 end
 
 --note: does not work while the profiler is active (Current implementation doesn't use the profiler, so we're good to go)
@@ -1955,6 +2502,17 @@ function mono_free_method(method) --unjit the method. Only works on dynamic meth
 
   monopipe.writeByte(MONOCMD_FREEMETHOD)
   monopipe.writeQword(method)
+  monopipe.unlock()
+end
+
+--note: does not work while the profiler is active (Current implementation doesn't use the profiler, so we're good to go)
+function mono_free(object) --unjit the method. Only works on dynamic methods. (most are not)
+  --if debug_canBreak() then return nil end
+
+  monopipe.lock()
+
+  monopipe.writeByte(MONOCMD_FREE)
+  monopipe.writeQword(object)
   monopipe.unlock()
 end
 
@@ -1990,6 +2548,31 @@ function mono_image_rva_map(image, offset)
   local address=monopipe.readQword()
   monopipe.unlock()
   return address;
+end
+
+function mono_string_readString(stringobject)
+  if stringobject==nil then
+    return nil,'invalid parameter'
+  end
+
+  local length,stringstart
+  --printf("mono_string_readString(%x)",stringobject)
+  if targetIs64Bit() then
+    length=readInteger(stringobject+0x10)
+    stringstart=stringobject+0x14
+    
+    --printf("length=%d",length)
+    --printf("stringstart=%x",stringstart)
+  else
+    length=readInteger(stringobject+0x8)
+    stringstart=stringobject+0x10
+  end
+  
+  if length==nil then
+    return string.format(translate('<Invalid string at %.8x>'), stringobject)
+  else  
+    return readString(stringstart,length*2,true)
+  end    
 end
 
 function mono_readObject()
@@ -2075,7 +2658,6 @@ function mono_writeVarType(vartype)
   end
 end
 
-
 function mono_invoke_method_dialog(domain, method, address)
   --spawn a dialog where the user can fill in fields like: instance and parameter values
   --parameter fields will be of the proper type
@@ -2087,7 +2669,7 @@ function mono_invoke_method_dialog(domain, method, address)
 
   if types==nil then return nil,'types==nil' end
 
-  local mifinfo={}
+  local mifinfo
 
   local typenames={}
   local tn
@@ -2097,23 +2679,60 @@ function mono_invoke_method_dialog(domain, method, address)
 
   if #typenames~=#paramnames then return nil end
 
-  mifinfo.mif=createForm(false)
-  mifinfo.mif.position='poScreenCenter'
-  mifinfo.mif.borderStyle='bsSizeable'
 
   local c=mono_method_getClass(method)
   local classname=''
   if c and (c~=0) then
     classname=mono_class_getName(c)..'.'
   end
+  
+  paramstrings={}
+  for i=1,#typenames do
+    paramstrings[i]=typenames[i]..' '..paramnames[i]
+  end
+  
+  mifinfo=createMethodInvokedialog(classname..mono_method_getName(method), paramstrings, function()
+    --ok button click
+    local instance=getAddressSafe(mifinfo.cbInstance.Text)
+    
+    if instance==nil then
+      instance=tonumber(mifinfo.cbInstance.Text)
+    end
 
+    if instance==nil then
+      messageDialog(mifinfo.cbInstance.Text..translate(' is not a valid address'), mtError, mbOK)
+      return
+    end
 
+    local params=mono_method_get_parameters(method)
 
-  mifinfo.mif.Caption=translate('Invoke ')..classname..mono_method_getName(method)
-  mifinfo.lblInstanceAddress=createLabel(mifinfo.mif)
-  mifinfo.lblInstanceAddress.Caption=translate('Instance address')
+    --use monoTypeToVartypeLookup to convert it to the type mono_method_invoke likes it
+    local args={}
+    for i=1, #params.parameters do
+      args[i]={}
+      args[i].type=monoTypeToVartypeLookup[params.parameters[i].type]
+      if args[i].type==vtString then
+        args[i].value=mifinfo.parameters[i].edtVarText.Text
+      else
+        args[i].value=tonumber(mifinfo.parameters[i].edtVarText.Text)
+      end
 
-  mifinfo.cbInstance=createComboBox(mifinfo.mif)
+      if args[i].value==nil then
+        messageDialog(translate('parameter ')..i..': "'..mifinfo.parameters[i].edtVarText.Text..'" '..translate('is not a valid value'), mtError, mbOK)
+        return
+      end
+    end
+    
+    _G.args=args
+    _G.instance=instance
+    _G.method=method
+    _G.bla=123
+    
+    local r=mono_invoke_method(domain, method, instance, args)
+    if r then
+      print('Method returned: '..r)
+    end    
+  end, true)
   
   --start a scan to fill the combobox with results
   if (address==nil) then
@@ -2141,169 +2760,6 @@ function mono_invoke_method_dialog(domain, method, address)
     mifinfo.cbInstance.Text=string.format('%x',address)
   end
   
-  
-  --[[ alternatively, fill it on DropDown
-  mifinfo.cbInstance.OnDropDown=function(cb)
-    --fill the combobox with instances
-  end
-  ]]
-  
-  mifinfo.gbParams=createGroupBox(mifinfo.mif)
-  mifinfo.gbParams.Caption=translate('Parameters')
-
-
-  mifinfo.gbParams.ChildSizing.ControlsPerLine=2
-  mifinfo.gbParams.ChildSizing.Layout='cclLeftToRightThenTopToBottom'
-  mifinfo.gbParams.ChildSizing.HorizontalSpacing=8
-  mifinfo.gbParams.AutoSize=true
-
-  mifinfo.pnlButtons=createPanel(mifinfo.mif)
-  mifinfo.pnlButtons.ChildSizing.ControlsPerLine=2
-  mifinfo.pnlButtons.ChildSizing.Layout='cclLeftToRightThenTopToBottom'
-
-  mifinfo.pnlButtons.BevelOuter='bvNone'
-  mifinfo.pnlButtons.BorderSpacing.Top=5
-  mifinfo.pnlButtons.BorderSpacing.Bottom=5
-  mifinfo.pnlButtons.ChildSizing.HorizontalSpacing=8
-
-
-  mifinfo.btnOk=createButton(mifinfo.mif)
-  mifinfo.btnCancel=createButton(mifinfo.mif)
-
-  mifinfo.btnOk.Parent=mifinfo.pnlButtons
-  mifinfo.btnCancel.Parent=mifinfo.pnlButtons
-
-  mifinfo.pnlButtons.AutoSize=true
-
-  mifinfo.btnOk.caption=translate('OK')
-  mifinfo.btnCancel.caption=translate('Cancel')
-  mifinfo.btnCancel.Cancel=true
-
-
-  mifinfo.pnlButtons.AnchorSideBottom.Control=mifinfo.mif
-  mifinfo.pnlButtons.AnchorSideBottom.Side=asrBottom
-  mifinfo.pnlButtons.AnchorSideLeft.Control=mifinfo.mif
-  mifinfo.pnlButtons.AnchorSideLeft.Side=asrCenter
-  mifinfo.pnlButtons.Anchors='[akLeft, akBottom]'
- -- mifinfo.pnlButtons.Color=clRed
-
-
-
-  mifinfo.lblInstanceAddress.AnchorSideTop.Control=mifinfo.mif
-  mifinfo.lblInstanceAddress.AnchorSideTop.Side=asrTop
-  mifinfo.lblInstanceAddress.AnchorSideTop.Left=mifinfo.mif
-  mifinfo.lblInstanceAddress.AnchorSideTop.Side=asrLeft
-
-  mifinfo.cbInstance.AnchorSideTop.Control=mifinfo.lblInstanceAddress
-  mifinfo.cbInstance.AnchorSideTop.Side=asrBottom
-  mifinfo.cbInstance.AnchorSideLeft.Control=mifinfo.mif
-  mifinfo.cbInstance.AnchorSideLeft.Side=asrLeft
-  mifinfo.cbInstance.AnchorSideRight.Control=mifinfo.mif
-  mifinfo.cbInstance.AnchorSideRight.Side=asrRight
-  mifinfo.cbInstance.Anchors='[akLeft, akRight, akTop]'
-
-
-
-
-
-  mifinfo.gbParams.AnchorSideTop.Control=mifinfo.cbInstance
-  mifinfo.gbParams.AnchorSideTop.Side=asrBottom
-  mifinfo.gbParams.AnchorSideLeft.Control=mifinfo.mif
-  mifinfo.gbParams.AnchorSideLeft.Side=asrLeft
-  mifinfo.gbParams.AnchorSideRight.Control=mifinfo.mif
-  mifinfo.gbParams.AnchorSideRight.Side=asrRight
-  mifinfo.gbParams.AnchorSideBottom.Control=mifinfo.pnlButtons
-  mifinfo.gbParams.AnchorSideBottom.Side=asrTop
-
-  mifinfo.gbParams.Anchors='[akLeft, akRight, akTop, akBottom]'
-
-  mifinfo.mif.AutoSize=true
-
-  mifinfo.parameters={}
-  local i
-  for i=1, #typenames do
-    local lblVarName=createLabel(mifinfo.mif)
-    local edtVarText=createEdit(mifinfo.mif)
-
-    lblVarName.Parent=mifinfo.gbParams
-    edtVarText.Parent=mifinfo.gbParams
-
-    lblVarName.Caption=paramnames[i]..': '..typenames[i]
-
-    mifinfo.parameters[i]={}
-    mifinfo.parameters[i].lblVarName=lblVarName
-    mifinfo.parameters[i].edtVarText=edtVarText
-
-    lblVarName.BorderSpacing.CellAlignVertical='ccaCenter'
-  end
-
-  mifinfo.btnOk.OnClick=function(b)
-    local instance=getAddressSafe(mifinfo.cbInstance.Text)
-    
-    if instance==nil then
-      instance=tonumber(mifinfo.cbInstance.Text)
-    end
-
-    if instance==nil then
-      messageDialog(mifinfo.cbInstance.Text..translate(' is not a valid address'), mtError, mbOK)
-      return
-    end
-
-    local params=mono_method_get_parameters(method)
-
-    --use monoTypeToVartypeLookup to convert it to the type mono_method_invole likes it
-    local args={}
-    for i=1, #params.parameters do
-      args[i]={}
-      args[i].type=monoTypeToVartypeLookup[params.parameters[i].type]
-      if args[i].type==vtString then
-        args[i].value=mifinfo.parameters[i].edtVarText.Text
-      else
-        args[i].value=tonumber(mifinfo.parameters[i].edtVarText.Text)
-      end
-
-      if args[i].value==nil then
-        messageDialog(translate('parameter ')..i..': "'..mifinfo.parameters[i].edtVarText.Text..'" '..translate('is not a valid value'), mtError, mbOK)
-        return
-      end
-    end
-    
-    _G.args=args
-    _G.instance=instance
-    _G.method=method
-    _G.bla=123
-    
-    local r=mono_invoke_method(domain, method, instance, args)
-    if r then
-      print('Method returned: '..r)
-    end
-
-  end
-
-  mifinfo.btnCancel.OnClick=function(b) mifinfo.mif.close() end
-
-
-
-  mifinfo.mif.onClose=function(f)
-    return caFree
-  end
-
-  mifinfo.mif.onDestroy=function(f)
-    --destroy all objects
-    mifinfo.btnOk.destroy()
-    mifinfo.btnOk=nil
-    
-    mifinfo.btnCancel.destroy()
-    mifinfo.btnCancel=nil
-
-    mifinfo.cbInstance.destroy()
-    mifinfo.cbInstance=nil
-    
-    mifinfo.gbParams.destroy()
-    mifinfo.gbParams=nil
-
-    mifinfo=nil
-  end
   mifinfo.mif.show()
 end
 
@@ -2345,6 +2801,8 @@ function mono_loadAssemblyFromFile(fname)
   monopipe.writeString(fname)
   local result = monopipe.readQword()
   monopipe.unlock()
+  
+  monocache.nonfoundclasses={}  --reset just the nonfound classes
   return result;  
 end
 
@@ -2727,6 +3185,9 @@ end
 
 
 function monoform_context_onpopup(sender)
+  if monopipe==nil then return end  
+  if tonumber(monopipe.ProcessID)~=getOpenedProcessID() then return end
+  
   local node=monoForm.TV.Selected
 
   local methodsEnabled = (node~=nil) and (node.Level==4) and (node.Parent.Text=='methods')
@@ -3215,20 +3676,22 @@ function mono_setMonoMenuItem(usesmono, usesdotnet)
         end
       end
     end
-
-    miMonoTopMenuItem.miMonoActivate.Visible=true
-    miMonoTopMenuItem.miMonoDissect.Visible=true
-    miMonoTopMenuItem.miDotNetSeperator.Visible=true
-      
-    if usesmono and not usesdotnet then
-      miMonoTopMenuItem.Caption=translate("Mono")
-    elseif usesdotnet and not usesmono then  
-      miMonoTopMenuItem.Caption=translate(".Net")
-      miMonoTopMenuItem.miMonoActivate.Visible=false
-      miMonoTopMenuItem.miMonoDissect.Visible=false      
-      miMonoTopMenuItem.miDotNetSeperator.Visible=false
-    else
-      miMonoTopMenuItem.Caption=translate("Mono/.Net")     
+    
+    if miMonoTopMenuItem then
+      miMonoTopMenuItem.miMonoActivate.Visible=true
+      miMonoTopMenuItem.miMonoDissect.Visible=true
+      miMonoTopMenuItem.miDotNetSeperator.Visible=true
+        
+      if usesmono and not usesdotnet then
+        miMonoTopMenuItem.Caption=translate("Mono")
+      elseif usesdotnet and not usesmono then  
+        miMonoTopMenuItem.Caption=translate(".Net")
+        miMonoTopMenuItem.miMonoActivate.Visible=false
+        miMonoTopMenuItem.miMonoDissect.Visible=false      
+        miMonoTopMenuItem.miDotNetSeperator.Visible=false
+      else
+        miMonoTopMenuItem.Caption=translate("Mono/.Net")     
+      end
     end
 
     
@@ -3304,7 +3767,9 @@ function mono_OpenProcessMT()
     end    
   end
   
-  mono_setMonoMenuItem(usesmono, usesdotnet)
+  synchronize(function()
+    mono_setMonoMenuItem(usesmono, usesdotnet)
+  end)
   
   if (usesmono==false) and (getOperatingSystem()==1) and (thread_checkifmonoanyhow==nil) then
     thread_checkifmonoanyhow=createThread(mono_checkifmonoanyhow)
@@ -3313,29 +3778,31 @@ function mono_OpenProcessMT()
 
   if (monopipe~=nil) and (monopipe.ProcessID~=getOpenedProcessID()) then
     --different process
-    monopipe.destroy()
-    monopipe=nil
+    synchronize(function()
+      monopipe.destroy()
+      monopipe=nil
 
-    if mono_AddressLookupID~=nil then
-      unregisterAddressLookupCallback(mono_AddressLookupID)
-      mono_AddressLookupID=nil
-    end
+      if mono_AddressLookupID~=nil then
+        unregisterAddressLookupCallback(mono_AddressLookupID)
+        mono_AddressLookupID=nil
+      end
 
 
-    if mono_SymbolLookupID~=nil then
-      unregisterSymbolLookupCallback(mono_SymbolLookupID)
-      mono_SymbolLookupID=nil
-    end
+      if mono_SymbolLookupID~=nil then
+        unregisterSymbolLookupCallback(mono_SymbolLookupID)
+        mono_SymbolLookupID=nil
+      end
 
-    if mono_StructureNameLookupID~=nil then
-      unregisterStructureNameLookup(mono_StructureNameLookupID)
-      mono_StructureNameLookupID=nil
-    end
+      if mono_StructureNameLookupID~=nil then
+        unregisterStructureNameLookup(mono_StructureNameLookupID)
+        mono_StructureNameLookupID=nil
+      end
 
-    if mono_StructureDissectOverrideID~=nil then
-      unregisterStructureDissectOverride(mono_StructureDissectOverrideID)
-      mono_StructureDissectOverrideID=nil
-    end
+      if mono_StructureDissectOverrideID~=nil then
+        unregisterStructureDissectOverride(mono_StructureDissectOverrideID)
+        mono_StructureDissectOverrideID=nil
+      end
+    end)
   end
 
 end
@@ -3345,8 +3812,18 @@ function mono_OnProcessOpened(processid, processhandle, caption)
   if mono_OldOnProcessOpened~=nil then
     mono_OldOnProcessOpened(processid, processhandle, caption)
   end
+  
+  if mono_OpenProcessMTThread==nil then --don't bother if it exists
+    mono_OpenProcessMTThread=createThread(function(t)       
+      t.Name='mono_OpenProcessMT'
+      --print("mono_OpenProcessMTThread")
+      mono_OpenProcessMT(t)
+      mono_OpenProcessMTThread=nil
+      --print("mono_OpenProcessMTThread finished")
+    end)  
+  end
 
-  mono_OpenProcessMT()
+  
 end
 
 function monoAA_USEMONO(parameters, syntaxcheckonly)
@@ -4250,6 +4727,8 @@ end
 
 function mono_initialize()
   --register a function to be called when a process is opened
+  monoSettings=getSettings("MonoExtension")  
+  
   if (mono_init1==nil) then
     mono_init1=true
     mono_OldOnProcessOpened=MainForm.OnProcessOpened

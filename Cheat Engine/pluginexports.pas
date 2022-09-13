@@ -10,7 +10,7 @@ uses {$ifdef darwin}macport,macportdefines,{$endif}
      SyncObjs,dialogs,LCLIntf,classes,autoassembler,
      CEFuncProc,NewKernelHandler,CEDebugger,KernelDebugger, plugin, math,
      debugHelper, debuggertypedefinitions, typinfo, ceguicomponents, strutils,
-     commonTypeDefs, luahandler, lua;
+     commonTypeDefs, luahandler, lua, betterControls;
 
 type TPluginFunc=function(parameters: pointer): pointer;
 function pluginsync(func: TPluginFunc; parameters: pointer): pointer; stdcall;
@@ -1618,7 +1618,7 @@ var i: integer;
 begin
   for i:=0 to screen.FormCount-1 do
   begin
-    if copy(screen.forms[i].name,1, 4)<>'UDF_' then //if not a userdefined form
+    if (copy(screen.forms[i].name,1, 4)<>'UDF_') and ((screen.forms[i] is TCEForm)=false) then //if not a userdefined form
       screen.Forms[i].Visible:=false;
   end;
 

@@ -1,116 +1,42 @@
 Additions and changes:
-  Big Endian custom types. You can enable them in settings if you like
-  Commonality scanner now also compares the base address. (handy in case it's more than one register)
-  translation support for ceshare
-  smartedit now also deals with isPointer and isOffset memrecs
-  referencedfunctions filter improvement
-  PE section display/parsing for addresses
-  D3D hook now asks if you're sure you wish to use it (in case of accidental click)
-  Memoryview hexadecimal view:
-    can now show custom types
-    Changing memory protection depends on the selected byte(range)
-  Break and trace window now supports searching the referencedAddress, referencedBytes and Instruction
-  When changing a memoryrecord value, you can reference 'value' and apply math to it
-  Added a "File->Load Recent..." menulist
-  Added an option to autosave (in settings)
-  Added .netcore support to the dotnet data collector
-  Added a syntaxcheck menuoption to the CE lua script window
-  Added tabs to the autoassembler and CE Lua script window. In case of the Lua script, the tabs get loaded from left to right whenn the table loads
-  When syntax checking an AOBScan script in 64-bit that does an Alloc without prefered base, ask if the user understands that the jmp instruction will be 14 bytes long
-  Some extra foundlist preferences
-  Find out what access/writes now resolved the address to string (when it has time)
-  CEShare now has a list of games that have tables
-  AA: dealloc(*) - Now deallocated all memory a script allocated
-  AA: unregistersymbol(*) - Now unregisters all symbols a script registered
-  Added a more userfriendly .net inspector
-  
-  
-
-Fixes:
-  Auto Assembler: Fixed getting weird numbers for newmem when using the templates to add new scripts
-  Unknown initial value scan for 2GB+ regions failed
-  Resolved issue where typecasts where replaced by addresses. (having a memoryrecord named float, would break AA scripts that'd use (float) )
-  AMD support for DBVM
-  Memoryrecord hotkeys showing up in the settings window as bring to front. Where clicking OK would then set it to that
-  Copy paste bug in the form designer
-  Hotkeys swapped comma and period on display
-  Resolved some issues with the forced module loader, and if it fails, don't freeze CE forever
-  AutoAssemble local would fail after opening a process
-  Pointermap based rescan
-  Assembler: (v)insertps , (v)comiss, (v)blendvp(s/d)
-
-  Lua/Mono: Better support for utf8 strings
-  Lua/Mono: Support targets that use mono, but not unity
-  Lua/Mono: UWP targets work better
-
-  
-
-lua:
-  changes:
-    Fixed executeMethod for widestrings (type4)
-    AddressList['description'] works now as well
-    some scripts variables that used to be global are now local
-    injectDLL has a new parameter to specify if CE should reload the symbols
-    getNameFromAddress has a new parameter to specify if you wish section names (default=false)
-    TfrmLuaEngine: document the mOutput and mScript properties
-    loadModule now has an optional timeout value
-    added an interface for the DotNetDataCollector
-
-  New functions:    
-    generateCodeInjectionScript
-    generateAOBInjectgionScript
-    generateFullInjectionScript
-    getNextAllocNumber
-    addSnapshotAsComment
-    getUniqueAOB
-    waitForSections
-    getUserDocumentsPath
-    getDotNetDataCollector
-
-    TfrmLuaEngine:
-      createLuaEngine     
-  
-    TfrmAutoInject:
-      Properties:
-        TabCount
-        TabScript
-
-      methods:
-        addTab
-        deleteTab
-
-    Memoryrecord:
-      properties:
-        NumericanValue
-
-      methods:
-        beginEdit/endEdit
-
-    AddressList:
-       properties:
-         OnAutoAssemblerEdit
-
-       methods:
-         rebuildDescriptionCache
  
-    Settings:
-      methods:
-        getBinaryValue
-        setBinaryValue
 
+from 7.4-7.4.1:
+  added .Visible property to treenode entries
+  added .VisibleRowCount and .TopItem to listviews
+  added arm64 disassembling and assembling
+  added lua function "runCommand"
+  added a radiobutton to select if the generated script will use 5 or 14 byte jmps.
+  conditional jumps can now deal 2gb+ destinations (will get rewritten)
+  dotnetinfo: Performance improvement
+  memory record hotkeys now have a "Only while down" option
+  Updated the dbghelp to a more recent version which can better handle nowadys pdb symbols
+  different memory allocations now get placed within the initial allocation block. Protection is changed afterwards
+  tracer can now step over rep instructions
+  lua stringstream now inherits from memorystream, so you have access to the Memory field
+  lua: Added a callback for whenever the structure list is modified
+  added architecture distinguishing to ceserver
+  pressing escape in the hotkey form will now close it
+  added nested structure support
+  added string based custom types
+  ctrl+enter in the disassembler now shows relative addresses from that point
+  the diffcount in "find out what accessess/writes" will now stay even when disabling the option to find the number of different addresses an instruction accesses
 
-
-
-How to use:
-There's a tutorial program included with Cheat Engine,
-it teaches how to use the basics of Cheat Engine, also the helpfile may be of use.
-
-
-
-For comments or suggestions and such, contact me at:
-e-mail(msn) = dark_byte@hotmail.com
-
-
-For more information about Cheat Engine or tables for it 
-and other things, goto this url:
-http://www.cheatengine.org/
+from 7.4-7.4.1:
+Fixes:
+  fixed the all type not finding 4 types when double was deselected
+  fixed the "all" type when not using double
+  fixed ccode esp access in 32-bit and "reg"f types
+  fixed disassembling when using binutils for disassembly
+  fixed the tablefiles menulist eating memory because they didn't get deleted properly
+  fixed .net issues that use obfoscated modules and missing metadata
+  fixed paring value starting with a - or +
+  fixed assembling pmovmskb
+  fixed disassembling vgather* vex256 instructions and allow usage of xmm/ymm registers as address (for instructions that allow it. Like this one)
+  fixed the addresslist not giving a proper error when using multiple enable or disable section
+  fixed error when using ctrl for speedhack hotkeys
+  fixed the groupscan command parser from assigning wildcard to the wrong combobox
+  fixed disassembling xchg eax/rax,xxx
+  fixed lua custom type registering as float when using the non lua function method
+  fixed small memoryscan issue for data at the end of a memoryblock
+  ccode doesn't register useless symbols anymore

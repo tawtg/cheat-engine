@@ -40,6 +40,8 @@ typedef struct _INITVARS
 	UINT64 nextstack; //The virtual address of the stack for the next CPU (vmloader only sets it up when 0)
 	UINT64 extramemory; //Physical address of some extra initial memory (physically contiguous)
 	UINT64 extramemorysize; //the number of pages that extramemory spans
+	UINT64 contiguousmemory; //Physical address of some extra initial memory (physically contiguous)
+	UINT64 contiguousmemorysize; //the number of pages that extramemory spans
 } INITVARS, *PINITVARS;
 
 
@@ -218,6 +220,49 @@ PMDL DBVMMDL;
 
 PINITVARS initvars;
 
+void cleanupDBVM() {
+	if (!initializedvmm)
+		return;
+
+	if (enterVMM2MDL) {
+		MmUnlockPages(enterVMM2MDL);
+		IoFreeMdl(enterVMM2MDL);
+		enterVMM2MDL = 0;
+	}
+
+	if (enterVMM2) {
+		RtlZeroMemory(enterVMM2, 4096);
+		MmFreeContiguousMemory(enterVMM2);
+		enterVMM2 = 0;
+	}
+
+	if (TemporaryPagingSetupMDL) {
+		MmUnlockPages(TemporaryPagingSetupMDL);
+		IoFreeMdl(TemporaryPagingSetupMDL);
+		TemporaryPagingSetupMDL = 0;
+	}
+
+	if (TemporaryPagingSetup) {
+		RtlZeroMemory(TemporaryPagingSetup, 4096 * 4);
+		ExFreePool(TemporaryPagingSetup);
+		TemporaryPagingSetup = 0;
+	}
+
+	if (originalstateMDL) {
+		MmUnlockPages(originalstateMDL);
+		IoFreeMdl(originalstateMDL);
+		originalstateMDL = 0;
+	}
+
+	if (originalstate) {
+		RtlZeroMemory(originalstate, 4096);
+		ExFreePool(originalstate);
+		originalstate = 0;
+	}
+
+	initializedvmm = 0;
+}
+
 void initializeDBVM(PCWSTR dbvmimgpath)
 /*
 Runs at passive mode
@@ -228,11 +273,23 @@ Runs at passive mode
 
 	DbgPrint("First time run. Initializing vmm section");
 
-	vmm = ExAllocatePool(PagedPool, 4 * 1024 * 1024);
+	PHYSICAL_ADDRESS LowAddress, HighAddress, SkipBytes;
+	LowAddress.QuadPart = 0;
+	HighAddress.QuadPart = -1;
+	SkipBytes.QuadPart = 0;
+
+	DBVMMDL = MmAllocatePagesForMdlEx(LowAddress, HighAddress, SkipBytes, 4 * 1024 * 1024, MmCached, MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS | MM_ALLOCATE_FULLY_REQUIRED);
+	if (!DBVMMDL) {
+		DbgPrint("Failure allocating the required 4MB\n");
+		return;
+	}
+
+	vmm = MmMapLockedPagesSpecifyCache(DBVMMDL, KernelMode, MmCached, NULL, FALSE, 0);
 	
 	//default password when dbvm is just loaded (needed for adding extra ram)
 	vmx_password1 = 0x76543210;
 	vmx_password2 = 0xfedcba98;
+	vmx_password3 = 0x90909090;
 
 
 	if (vmm)
@@ -244,10 +301,6 @@ Runs at passive mode
 		IO_STATUS_BLOCK statusblock;
 		OBJECT_ATTRIBUTES oa;
 		NTSTATUS OpenedFile;
-
-		DBVMMDL = IoAllocateMdl((PVOID)vmm, 4 * 1024 * 1024, FALSE, FALSE, NULL);
-		if (DBVMMDL)
-			MmProbeAndLockPages(DBVMMDL, KernelMode, IoReadAccess);
 
 		vmmPA = (UINT_PTR)MmGetPhysicalAddress(vmm).QuadPart;
 
@@ -307,7 +360,6 @@ Runs at passive mode
 
 			if (statusblock.Status == STATUS_SUCCESS)
 			{
-
 				DWORD vmmsize = fsi.EndOfFile.LowPart;// -(startsector * 512);
 
 				//now read the vmdisk into the allocated memory
@@ -586,8 +638,19 @@ Runs at passive mode
 					initvars->vmmstart = vmmPA;
 					initvars->pagedirlvl4 = 0x00400000 + ((UINT64)PageMapLevel4 - (UINT64)vmm);
 					initvars->nextstack = 0x00400000 + ((UINT64)mainstack - (UINT64)vmm) + (16 * 4096) - 0x40;
+					initvars->contiguousmemory = 0;
+					
+					PMDL contiguousMDL = MmAllocatePagesForMdlEx(LowAddress, HighAddress, SkipBytes, 8 * 4096, MmCached, MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS | MM_ALLOCATE_FULLY_REQUIRED);
+					if (contiguousMDL) {
+						initvars->contiguousmemory = MmGetMdlPfnArray(contiguousMDL)[0] << 12;
+						DbgPrint("contiguous PA =%llx\n", initvars->contiguousmemory);
+						initvars->contiguousmemorysize = 8;
+						ExFreePool(contiguousMDL);
+					}
+					else
+						DbgPrint("Failed allocating 32KB of contiguous memory");
 
-					//add 64KB extra per CPU
+
 					initializedvmm = TRUE;
 
 					KeInitializeSpinLock(&LoadedOSSpinLock);
@@ -604,12 +667,13 @@ Runs at passive mode
 			DbgPrint("Failure opening the file. Status=%x  (filename=%S)\n", OpenedFile, filename.Buffer);
 		}
 		//fill in some specific memory regions
-
+		MmUnmapLockedPages(vmm, DBVMMDL);
 	}
 	else
 	{
 		DbgPrint("Failure allocating the required 4MB\n");
 	}
+	ExFreePool(DBVMMDL);
 }
 
 void vmxoffload(void)
@@ -907,7 +971,7 @@ void vmxoffload_override(CCHAR cpunr, PKDEFERRED_ROUTINE Dpc, PVOID DeferredCont
 	LowAddress.QuadPart = 0;
 	HighAddress.QuadPart = 0xffffffffffffffffI64;
 	SkipBytes.QuadPart = 0;
-	mdl=MmAllocatePagesForMdl(LowAddress, HighAddress, SkipBytes, 64 * 1024); //do not free this, EVER
+	mdl = MmAllocatePagesForMdlEx(LowAddress, HighAddress, SkipBytes, 64 * 1024, MmCached, MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS | MM_ALLOCATE_FULLY_REQUIRED); //do not free this, EVER
 
 	if (mdl)
 	{

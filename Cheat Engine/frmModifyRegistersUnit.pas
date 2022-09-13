@@ -14,7 +14,7 @@ uses
   LCLIntf, Messages, SysUtils, Variants, Classes, Graphics, Controls, Forms,
   Dialogs, StdCtrls, CEDebugger, debughelper, KernelDebugger, CEFuncProc,
   NewKernelHandler, symbolhandler, LResources, ExtCtrls, ComCtrls,  math,
-  BreakpointTypeDef;
+  BreakpointTypeDef, betterControls;
 
 type
 
@@ -147,6 +147,8 @@ uses formsettingsunit, MemoryBrowserFormUnit, debuggertypedefinitions,
 resourcestring
   rsModifyRegistersSAt = 'Modify registers(s) at %s';
   rsPleaseFillInAValidValueFor = 'Please fill in a valid value for';
+  rsFailureSettingDBVMChangeRegOnBP = 'Failure setting a DBVM ChangeRegOnBP '
+    +'breakpoint';
 
 constructor TfrmModifyRegisters.create(AOwner:tcomponent;address:ptrUint);
 var x: pbreakpoint;
@@ -613,6 +615,8 @@ var
   bo: integer;
   ob: byte;
 begin
+  zeromemory(@tempregedit, sizeof(tempregedit));
+
   tempregedit.address:=address;
   tempregedit.change_eax:=edtEAX.text<>'';
   tempregedit.change_ebx:=edtEBX.text<>'';
@@ -674,7 +678,7 @@ begin
       if trim(floats[i].edt.Text)<>'' then
       begin
         tempregedit.change_FP:=tempregedit.change_FP or (1 shl i);
-        {$ifdef cpu64}
+        {$ifdef cpux86_64}
         d:=StrToFloat(trim(floats[i].edt.Text));
         doubletoextended(@d,pointer(ptruint(@tempregedit.new_FP0)+16*i));
         {$else}
@@ -835,7 +839,7 @@ begin
 
       log('Calling dbvm_cloak_changeregonbp');
       if dbvm_cloak_changeregonbp(PA, changereginfo, address)<>0 then
-        MessageDlg('Failure setting a DBVM ChangeRegOnBP breakpoint', mtError,[mbok],0);
+        MessageDlg(rsFailureSettingDBVMChangeRegOnBP, mtError, [mbok], 0);
 
       memorybrowser.disassemblerview.Update;
       modalresult:=mrok;
@@ -967,7 +971,7 @@ begin
         if (currentbp.changereg.change_FP and (1 shl i))>0 then
         begin
           pex:=pextended(ptruint(@currentbp.changereg.new_FP0)+16*i);
-          {$ifdef cpu32}
+          {$ifndef cpux86_64}
           floats[i].edt.Text:=floattostr(pex^);
           {$else}
           extendedtodouble(pex,d);

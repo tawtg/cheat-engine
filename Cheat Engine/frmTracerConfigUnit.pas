@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, FileUtil, LResources, Forms, Controls, Graphics, Dialogs,
-  StdCtrls, ExtCtrls, debuggertypedefinitions;
+  StdCtrls, ExtCtrls, debuggertypedefinitions, betterControls;
 
 type
 
@@ -19,6 +19,10 @@ type
     cbSaveStack: TCheckBox;
     cbStepOver: TCheckBox;
     cbSkipSystemModules: TCheckBox;
+    cbDBVMBreakAndTrace: TCheckBox;
+    cbDBVMTriggerCOW: TCheckBox;
+    cbStayInsideInitialModule: TCheckBox;
+    cbStepOverRep: TCheckBox;
     edtStartCondition: TEdit;
     edtMaxTrace: TEdit;
     edtStopCondition: TEdit;
@@ -33,7 +37,12 @@ type
     rbBPDBVM: TRadioButton;
     rbBreakOnAccess: TRadioButton;
     rbBreakOnWrite: TRadioButton;
+    procedure cbDBVMBreakAndTraceChange(Sender: TObject);
+    procedure cbStepOverChange(Sender: TObject);
+    procedure FormConstrainedResize(Sender: TObject; var MinWidth, MinHeight,
+      MaxWidth, MaxHeight: TConstraintSize);
     procedure FormCreate(Sender: TObject);
+    procedure FormShow(Sender: TObject);
   private
     { private declarations }
     fDataTrace: boolean;
@@ -53,10 +62,14 @@ implementation
 { TfrmTracerConfig }
 
 uses NewKernelHandler, DebugHelper, debuggerinterface, DebuggerInterfaceAPIWrapper,
-  formsettingsunit;
+  formsettingsunit, DBVMDebuggerInterface;
 
 function TfrmTracerConfig.getBreakpointmethod: TBreakpointmethod;
 begin
+  if (CurrentDebuggerInterface<>nil) and (CurrentDebuggerInterface is TDBVMDebugInterface) then
+    exit(bpmDBVMNative);
+
+
   result:=bpmDebugRegister;
 
   if rbBPHardware.checked then
@@ -94,10 +107,88 @@ begin
   if hasEPTSupport=false then
     rbBPDBVM.visible:=false;
 
-  rbBPHardware.enabled:=true;
-  rbBPSoftware.enabled:=((CurrentDebuggerInterface<>nil) and (dbcSoftwareBreakpoint in CurrentDebuggerInterface.DebuggerCapabilities)) or (formsettings.cbKDebug.Checked=false);
-  rbBPException.enabled:=((CurrentDebuggerInterface<>nil) and (dbcExceptionBreakpoint in CurrentDebuggerInterface.DebuggerCapabilities)) or (formsettings.cbKDebug.Checked=false);
+  rbBPHardware.enabled:=((CurrentDebuggerInterface<>nil) and CurrentDebuggerInterface.usesDebugRegisters) or (formsettings.cbUseDBVMDebugger.checked=false);
+  rbBPSoftware.enabled:=((CurrentDebuggerInterface<>nil) and (dbcSoftwareBreakpoint in CurrentDebuggerInterface.DebuggerCapabilities)) and (formsettings.cbKDebug.Checked=false);
+  rbBPException.enabled:=((CurrentDebuggerInterface<>nil) and (dbcExceptionBreakpoint in CurrentDebuggerInterface.DebuggerCapabilities)) and (formsettings.cbKDebug.Checked=false);
   rbBPDBVM.enabled:=((CurrentDebuggerInterface<>nil) and (dbcDBVMBreakpoint in CurrentDebuggerInterface.DebuggerCapabilities)) or (formsettings.cbKDebug.Checked);
+
+  cbDBVMBreakAndTrace.visible:=isDBVMCapable;
+  cbDBVMBreakAndTrace.enabled:=isDBVMCapable;
+
+  if (CurrentDebuggerInterface=nil) and isRunningDBVM then //no debugger running, go for dbvm by default
+    cbDBVMBreakAndTrace.Checked:=true;
+
+  if (CurrentDebuggerInterface<>nil) and (CurrentDebuggerInterface is TDBVMDebugInterface) or (formSettings.cbUseDBVMDebugger.checked) then
+    groupbox1.visible:=false;
+end;
+
+procedure TfrmTracerConfig.FormShow(Sender: TObject);
+begin
+
+ // autosize:=false;
+end;
+
+procedure TfrmTracerConfig.cbDBVMBreakAndTraceChange(Sender: TObject);
+begin
+
+  if cbDBVMBreakAndTrace.Checked then
+  begin
+    cbStayInsideInitialModule.checked:=false;
+    cbStayInsideInitialModule.enabled:=false;
+    cbDBVMTriggerCOW.visible:=true;
+    cbDereferenceAddresses.enabled:=false;
+    cbStepOver.enabled:=false;
+    cbSkipSystemModules.enabled:=false;
+    groupbox1.enabled:=false;
+    rbBPHardware.enabled:=false;
+
+
+    rbBPSoftware.enabled:=false;
+    rbBPException.enabled:=false;
+    rbBPDBVM.enabled:=false;
+    Label3.enabled:=false;
+    edtStartCondition.enabled:=false;
+
+    Label2.enabled:=false;
+    edtStopCondition.enabled:=false;
+  end
+  else
+  begin
+    cbDBVMTriggerCOW.visible:=formSettings.cbUseDBVMDebugger.checked;
+    cbDereferenceAddresses.enabled:=true;
+    cbStepOver.enabled:=true;
+    cbSkipSystemModules.enabled:=true;
+    groupbox1.enabled:=true;
+    rbBPHardware.enabled:=true;
+
+    rbBPSoftware.enabled:=((CurrentDebuggerInterface<>nil) and (dbcSoftwareBreakpoint in CurrentDebuggerInterface.DebuggerCapabilities)) or (formsettings.cbKDebug.Checked=false);
+    rbBPException.enabled:=((CurrentDebuggerInterface<>nil) and (dbcExceptionBreakpoint in CurrentDebuggerInterface.DebuggerCapabilities)) or (formsettings.cbKDebug.Checked=false);
+    rbBPDBVM.enabled:=((CurrentDebuggerInterface<>nil) and (dbcDBVMBreakpoint in CurrentDebuggerInterface.DebuggerCapabilities)) or (formsettings.cbKDebug.Checked);
+    label3.enabled:=true;
+    edtStartCondition.enabled:=true;
+
+    label2.enabled:=true;
+    edtStopCondition.enabled:=true;
+
+    cbStayInsideInitialModule.enabled:=true;
+  end;
+
+end;
+
+procedure TfrmTracerConfig.cbStepOverChange(Sender: TObject);
+begin
+  if cbStepOver.checked then
+  begin
+    cbStepOverRep.enabled:=false;
+    cbStepOverRep.checked:=true;
+  end;
+end;
+
+procedure TfrmTracerConfig.FormConstrainedResize(Sender: TObject; var MinWidth,
+  MinHeight, MaxWidth, MaxHeight: TConstraintSize);
+begin
+  MaxHeight:=panel1.top+panel1.Height+8;
+  MinHeight:=MaxHeight;
 end;
 
 procedure TfrmTracerConfig.setDataTrace(state: boolean);
@@ -106,7 +197,11 @@ begin
   rbBreakOnWrite.visible:=state;
 
   if state then
-    btnOk.top:=rbBreakOnAccess.top+rbBreakOnAccess.Height+5
+  begin
+    btnOk.top:=rbBreakOnAccess.top+rbBreakOnAccess.Height+5;
+    cbDBVMBreakAndTrace.visible:=false;
+    cbDBVMBreakAndTrace.Checked:=false;
+  end
   else
     btnOk.top:=cbSkipSystemModules.top+cbSkipSystemModules.Height+5;
 
@@ -119,6 +214,9 @@ begin
     rbBPHardware.checked:=true;
 
   fDataTrace:=state;
+
+
+
 end;
 
 

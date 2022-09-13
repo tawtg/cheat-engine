@@ -29,6 +29,8 @@ type
       synchronizeparam: integer;
       synchronizeparamcount: integer;
       syncvm: Plua_State;
+
+      selfdestructing: boolean;
       procedure NotifyEvent(sender: TObject);
       procedure SelectionChangeEvent(Sender: TObject; User: boolean);
       procedure MouseEvent(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
@@ -56,6 +58,8 @@ type
       procedure CloseEvent(Sender: TObject; var CloseAction: TCloseAction);
       procedure CloseQueryEvent(Sender: TObject; var CanClose: boolean);
       function MemoryRecordActivateEvent(sender: TObject; before, currentstate: boolean): boolean;
+      procedure MemoryRecordChangedValueEvent(sender: TObject; oldvalue, newvalue: string);
+
       procedure DisassemblerSelectionChangeEvent(sender: TObject; address, address2: ptruint);
       function DisassemblerExtraLineRender(sender: TObject; Address: ptruint; AboveInstruction: boolean; selected: boolean; var x: integer; var y: integer): TRasterImage;
 
@@ -97,8 +101,11 @@ type
       procedure TabGetImageEvent(Sender: TObject; TabIndex: Integer; var ImageIndex: Integer);
       procedure MeasureItemEvent(Control: TWinControl; Index: Integer; var AHeight: Integer);
       procedure DisassemblerViewOverrideCallback(address: ptruint; var addressstring: string; var bytestring: string; var opcodestring: string; var parameterstring: string; var specialstring: string);
+      function HelpEvent(Command: Word; Data: PtrInt; var CallHelp: Boolean): Boolean;
+
 
       procedure synchronize;
+      procedure queue;
 
       procedure pushFunction(L: PLua_state=nil);
 
@@ -150,7 +157,7 @@ implementation
 
 uses
   luahandler, LuaByteTable, MainUnit, disassemblerviewunit,
-  hexviewunit, d3dhookUnit, luaclass, debuggertypedefinitions, memscan,
+  hexviewunit, d3dhookUnit, LuaClass, debuggertypedefinitions, memscan,
   symbolhandler, symbolhandlerstructs, menus, BreakpointTypeDef;
 
 resourcestring
@@ -345,6 +352,8 @@ var
   paramcount: integer;
   i: integer;
 begin
+  selfdestructing:=true;
+
   //no locking here (should already be obtained by the caller)
   PushFunction(syncvm);
   if synchronizeparam>0 then
@@ -365,6 +374,15 @@ begin
 
   lua_pcall(syncvm, paramcount,1,0);
 
+  free;
+end;
+
+procedure TLuaCaller.queue;
+begin
+  selfdestructing:=true;
+
+  PushFunction(syncvm);
+  lua_pcall(syncvm, 0,0,0);
   free;
 end;
 
@@ -466,6 +484,29 @@ begin
         if lua_gettop(L)>0 then
           canclose:=lua_toboolean(L,-1);
       end;
+    end;
+  finally
+    lua_settop(L, oldstack);
+  end;
+end;
+
+procedure TLuaCaller.MemoryRecordChangedValueEvent(sender: TObject; oldvalue, newvalue: string);
+var
+  oldstack: integer;
+  l: Plua_State;
+begin
+  l:=GetLuaState;
+  oldstack:=lua_gettop(L);
+
+  try
+    if canRun then
+    begin
+      PushFunction;
+      luaclass_newClass(L, sender);
+      lua_pushstring(L, oldvalue);
+      lua_pushstring(L, newvalue);
+
+      lua_pcall(L, 3,1,0); //procedure(sender, oldvalue, newvalue)
     end;
   finally
     lua_settop(L, oldstack);
@@ -1311,6 +1352,7 @@ function TLuaCaller.SymbolLookupCallback(s: string): ptruint;
 var oldstack: integer;
 begin
   result:=0;
+  if Luavm=nil then exit;
   oldstack:=lua_gettop(Luavm);
   try
     PushFunction;
@@ -1716,6 +1758,25 @@ begin
   end;
 end;
 
+function TLuaCaller.HelpEvent(Command: Word; Data: PtrInt; var CallHelp: Boolean): Boolean;
+var
+  oldstack: integer;
+begin
+  result:=false;
+  oldstack:=lua_gettop(Luavm);
+  try
+    pushFunction;
+    lua_pushinteger(LuaVM, Command);
+    lua_pushinteger(LuaVM, Data);
+    lua_pushboolean(LuaVM, CallHelp);
+    lua_pcall(LuaVM, 3,2,0);
+
+    if not lua_isnil(LuaVM,-2) then result:=lua_toboolean(LuaVM,-2);
+    if not lua_isnil(LuaVM,-1) then CallHelp:=lua_toboolean(LuaVM,-1);
+  finally
+    lua_settop(LuaVM, oldstack);
+  end;
+end;
 
 //----------------------------Lua implementation-----------------------------
 function LuaCaller_NotifyEvent(L: PLua_state): integer; cdecl;
@@ -2384,6 +2445,31 @@ begin
     lua_pop(L, lua_gettop(L));
 end;
 
+function LuaCaller_MemoryRecordChangedValueEvent(L: PLua_state): integer; cdecl;
+var
+  m: TMethod;
+  sender: TObject;
+  oldvalue, newvalue: string;
+  r: boolean;
+begin
+  result:=0;
+  if lua_gettop(L)=3 then
+  begin
+    //(sender: TObject; before, currentstate: boolean):
+    m.code:=lua_touserdata(L, lua_upvalueindex(1));
+    m.data:=lua_touserdata(L, lua_upvalueindex(2));
+    sender:=lua_toceuserdata(L, 1);
+    oldvalue:=Lua_ToString(L, 2);
+    newvalue:=Lua_ToString(L, 3);
+    lua_pop(L, lua_gettop(L));
+
+    TMemoryRecordChangedValueEvent(m)(sender,oldvalue, newvalue);
+    result:=0;
+  end
+  else
+    lua_pop(L, lua_gettop(L));
+end;
+
 function LuaCaller_MemoryRecordActivateEvent(L: PLua_state): integer; cdecl;
 var
   m: TMethod;
@@ -3021,6 +3107,30 @@ begin
     lua_pop(L, lua_gettop(L));
 end;
 
+
+function LuaCaller_HelpEvent(L: PLua_state): integer; cdecl; // function(Command: Word; Data: PtrInt; var CallHelp: Boolean): Boolean of object;  <>  function(Command, Data, CallHelp): result, newCallHelp
+var command: word;
+  data: ptrint;
+  CallHelp: Boolean;
+
+  m: TMethod;
+  r: boolean;
+begin
+  if lua_gettop(L)=3 then
+  begin
+    m.code:=lua_touserdata(L, lua_upvalueindex(1));
+    m.data:=lua_touserdata(L, lua_upvalueindex(2));
+    command:=lua_tointeger(L,1);
+    data:=lua_tointeger(L,2);
+    CallHelp:=lua_toboolean(L,3);
+
+    r:=THelpEvent(m)(command, data, callhelp);
+    lua_pushboolean(L,r);
+    lua_pushboolean(L,callhelp);
+    result:=2;
+  end;
+end;
+
 procedure registerLuaCall(typename: string; getmethodprop: lua_CFunction; setmethodprop: pointer; luafunctionheader: string);
 var t: TLuaCallData;
 begin
@@ -3070,7 +3180,10 @@ initialization
 
 
 
-  registerLuaCall('TMemoryRecordActivateEvent', LuaCaller_MemoryRecordActivateEvent, pointer(TLuaCaller.MemoryRecordActivateEvent),'function %s(sender, before, current)'#13#10#13#10'end'#13#10);
+  registerLuaCall('TMemoryRecordActivateEvent',     LuaCaller_MemoryRecordActivateEvent,     pointer(TLuaCaller.MemoryRecordActivateEvent),'function %s(sender, before, current)'#13#10#13#10'end'#13#10);
+  registerLuaCall('TMemoryRecordChangedValueEvent', LuaCaller_MemoryRecordChangedValueEvent, pointer(TLuaCaller.MemoryRecordChangedValueEvent),'function %s(sender, oldvalue, newvalue)'#13#10#13#10'end'#13#10);
+
+
 
   registerLuaCall('TDisassemblerSelectionChangeEvent', LuaCaller_DisassemblerSelectionChangeEvent, pointer(TLuaCaller.DisassemblerSelectionChangeEvent),'function %s(sender, address, address2)'#13#10#13#10'end'#13#10);
   registerLuaCall('TDisassemblerExtraLineRender', LuaCaller_DisassemblerExtraLineRender, pointer(TLuaCaller.DisassemblerExtraLineRender),'function %s(sender, Address, AboveInstruction, Selected)'#13#10#13#10'return nil,0,0'#13#10#13#10'end'#13#10);
@@ -3098,5 +3211,8 @@ initialization
   registerLuaCall('TMeasureItemEvent', LuaCaller_MeasureItemEvent, pointer(TLuaCaller.MeasureItemEvent),'function %s(sender, index, height)'#13#10'  return height'#13#10'end'#13#10);
 
   registerLuaCall('TDisassemblerViewOverrideCallback', LuaCaller_DisassemblerViewOverrideCallback, pointer(TLuaCaller.DisassemblerViewOverrideCallback),'function %s(address, addressstring, bytestring, opcodestring, parameterstring, specialstring)'#13#10'  return addressstring, bytestring, opcodestring, parameterstring, specialstring'#13#10'end'#13#10);
+
+  registerLuaCall('THelpEvent', LuaCaller_HelpEvent, pointer(TLuaCaller.HelpEvent),'function %s(command, data ,callhelp)'#13#10#13#10'  return result, callhelp'#13#10'end'#13#10);
+
 end.
 

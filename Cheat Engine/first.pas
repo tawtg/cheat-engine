@@ -54,13 +54,13 @@ end;
 
 var
   i: integer;
-  istrainer: boolean;
+  //istrainer: boolean;
   r: TRegistry;
   hassetdpiaware: boolean;
 initialization
   //todo, check registry if not a trainer
 
-  istrainer:=false;
+  //istrainer:=false;
   hassetdpiaware:=false;
 
   for i:=1 to Paramcount do
@@ -71,16 +71,17 @@ initialization
       hassetdpiaware:=true;
     end;
 
-    if pos('.CETRAINER', uppercase(ParamStr(i)))>0 then
-      istrainer:=true;
+    //if pos('.CETRAINER', uppercase(ParamStr(i)))>0 then
+    //  istrainer:=true;
   end;
 
-  if not (istrainer or hassetdpiaware) then
+  if not hassetdpiaware then
   begin
     //check the registry
     r := TRegistry.Create;
     r.RootKey := HKEY_CURRENT_USER;
-    if r.OpenKey('\Software\Cheat Engine',false) then
+
+    if r.OpenKey('\Software\'+{$ifdef altname}'Runtime Modifier'{$else}'Cheat Engine'{$endif},false) then
     begin
       if (r.ValueExists('DPI Aware')=false) or r.ReadBool('DPI Aware') then
         setDPIAware;
@@ -88,7 +89,7 @@ initialization
     else
     begin
       //first time CE is ran, and not a trainer.
-      if r.OpenKey('\Software\Cheat Engine',true) then
+      if r.OpenKey('\Software\'+{$ifdef altname}'Runtime Modifier'{$else}'Cheat Engine'{$endif},true) then
       begin
         //I do have access
         setDPIAware; //default config is enabled

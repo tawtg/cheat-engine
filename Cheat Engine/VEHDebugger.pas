@@ -61,13 +61,13 @@ type
 implementation
 
 {$ifdef windows}
-uses ProcessHandlerUnit, Globals, dialogs;
+uses ProcessHandlerUnit, Globals, dialogs, mainunit2;
 
 resourcestring
   rsErrorWhileTryingToCreateTheConfigurationStructure = 'Error while trying '
     +'to create the configuration structure! (Which effectively renders this '
     +'whole feature useless) Errorcode=%s';
-  rsCheatEngineFailedToGetIntoTheConfig = 'Cheat Engine failed to get into '
+  rsCheatEngineFailedToGetIntoTheConfig = strCheatEngine+' failed to get into '
     +'the config of the selected program. (Error=%s)';
   rsFailureDuplicatingTheEventHandlesToTheOtherProcess = 'Failure duplicating '
     +'the event handles to the other process';
@@ -128,7 +128,7 @@ end;
 constructor TVEHDebugInterface.create;
 begin
   inherited create;
-  fDebuggerCapabilities:=[dbcSoftwareBreakpoint,dbcHardwareBreakpoint, dbcExceptionBreakpoint];
+  fDebuggerCapabilities:=fDebuggerCapabilities+[dbcSoftwareBreakpoint,dbcHardwareBreakpoint, dbcExceptionBreakpoint];
   name:='VEH Debugger';
 
   fmaxSharedBreakpointCount:=4;
@@ -166,6 +166,7 @@ function TVEHDebugInterface.SetThreadContext(hThread: THandle; const lpContext: 
 var c: PContext;
 {$ifdef cpu64}
     c32: PContext32 absolute c;
+    i: integer;
 {$endif}
 begin
 
@@ -207,7 +208,10 @@ begin
       c32.SegSs:=lpcontext.SegSs;
 
       CopyMemory(@c32.ext, @lpContext.fltsave,sizeof(c32.ext));
-      CopyMemory(@c32.FloatSave.RegisterArea[0], @lpContext.fltsave.FloatRegisters[0], 10*8);
+
+      for i:=0 to 7 do
+        CopyMemory(@c32.FloatSave.RegisterArea[i*10], @lpContext.fltsave.FloatRegisters[i], 10);
+
     end else c^:=lpContext;
 
    // end;// else lpContext:=c^;
@@ -401,10 +405,6 @@ begin
         {$ifdef cpu64}
         if is64bit then
         begin
-
-
-
-
           lpDebugEvent.Exception.ExceptionRecord.ExceptionCode:=VEHDebugView.Exception64.ExceptionCode;
           lpDebugEvent.Exception.ExceptionRecord.ExceptionFlags:=VEHDebugView.Exception64.ExceptionFlags;
           lpDebugEvent.Exception.ExceptionRecord.ExceptionRecord:=pointer(VEHDebugView.Exception64.ExceptionRecord);
@@ -485,9 +485,14 @@ var
   err: boolean;
 begin
   try
-    processhandler.processid:=dwProcessID;
-    Open_Process;
-    symhandler.reinitialize;
+    debuggerAttachStatus:='Attaching VEH Debug';
+    if dwProcessID<>processhandler.processid then
+    begin
+      processhandler.processid:=dwProcessID;
+
+      Open_Process;
+      symhandler.reinitialize;
+    end;
 
     is64bit:=processhandler.is64Bit;
     if is64bit then
@@ -509,7 +514,7 @@ begin
 
     //guidstring:='Global\'+GUIDToString(guid);
     OutputDebugString('Creating filemap with name '+pchar(guidstring));
-
+    debuggerAttachStatus:='Creating filemap';
     ConfigFileMapping:=CreateFileMapping(INVALID_HANDLE_VALUE,nil,PAGE_READWRITE,0,sizeof(TVEHDebugSharedMem),pchar(guidstring));
 
     if ConfigFileMapping=0 then
@@ -541,6 +546,8 @@ begin
     HeartBeat.Priority:=tpHighest;
     HeartBeat.Start;
 
+    debuggerAttachStatus:='Started hearbeat';
+
     VEHDebugView.ThreadWatchMethod:=0; //vehthreadwatchmethod;
     if VEHRealContextOnThreadCreation then
       VEHDebugView.ThreadWatchMethodConfig:=TPOLL_TCREATEREALCONTEXT
@@ -552,6 +559,7 @@ begin
     HasDebugEvent:=CreateEvent(nil, false, false, nil);
     HasHandledDebugEvent:=CreateEvent(nil, false, false, nil);
 
+    debuggerAttachStatus:='Duplicating handles';
 
     if not DuplicateHandle(GetCurrentProcess, HasDebugEvent, processhandle, @VEHDebugView^.HasDebugEvent, 0, false, DUPLICATE_SAME_ACCESS) then
       raise exception.Create(
@@ -565,19 +573,23 @@ begin
       raise exception.Create(rsFailureDuplicatingTheFilemapping);
 
 
-
+    debuggerAttachStatus:='Waiting for kernel32';
     symhandler.waitforsymbolsloaded(true,'kernel32.dll');
 
     testptr:=symhandler.getAddressFromName('"vehdebug'+prefix+'.InitializeVEH"',false,err);
     if err or (testptr=0) then
     begin
       try
+        debuggerAttachStatus:='Injecting vehdebug'+prefix+'.dll';
         InjectDll(cheatenginedir+'vehdebug'+prefix+'.dll');
       except
       end;
     end;
 
+
+    debuggerAttachStatus:='reloading symbols';
     symhandler.reinitialize;
+    debuggerAttachStatus:='waiting for symbols from vehdebug'+prefix+'.dll';
     symhandler.waitforsymbolsloaded(true,'vehdebug'+prefix+'.dll');
 
     testptr:=symhandler.getAddressFromName('"vehdebug'+prefix+'.InitializeVEH"');
@@ -597,16 +609,18 @@ begin
       s.Add('CreateThread("vehdebug'+prefix+'.InitializeVEH")');
 
       //Clipboard.SetTextBuf(pchar(s.text));
+      debuggerAttachStatus:='Assembling VEH injection script';
 
       if autoassemble(s,false) then
       begin
         //debugger is attached and ready to go
         active:=true;
         THeartBeat(Heartbeat).StartVersionCheck;
+        debuggerAttachStatus:='VEH injection script assembled succesful';
       end
       else
       begin
-
+        debuggerAttachStatus:='VEH injection script failed';
 //        showmessage(s.text);
       end;
 
@@ -615,9 +629,11 @@ begin
       s.free;
     end;
 
+    debuggerAttachStatus:='Ready';
   except
     on e: exception do
     begin
+      debuggerAttachStatus:='Exception: '+e.message;
       messagebox(0, pchar(e.message), pchar(utf8toansi(rsVEHDebugError)), MB_OK or MB_ICONERROR);
       result:=false;
     end;

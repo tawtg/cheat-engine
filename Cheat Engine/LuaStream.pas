@@ -26,11 +26,26 @@ end;
 function stream_setSize(L: PLua_State): integer; cdecl;
 var
   stream: Tstream;
+  oldsize: integer;
+  newsize: integer;
+  diff: integer;
 begin
   result:=0;
   stream:=luaclass_getClassObject(L);
-  if lua_gettop(L)=1 then
-    stream.Size:=lua_tointeger(L,-1);
+  if lua_gettop(L)>=1 then
+  begin
+    newsize:=lua_tointeger(L,1);
+    if stream is TMemoryStream then
+    begin
+      oldsize:=stream.size;
+      stream.size:=newsize;
+
+      //zero the new bytes
+      FillByte(pointer(ptruint(tmemorystream(stream).Memory)+oldsize)^, newsize-oldsize,0);
+    end
+    else
+      stream.Size:=newsize;
+  end;
 end;
 
 function stream_getPosition(L: PLua_State): integer; cdecl;
@@ -297,6 +312,7 @@ var
   ms: Tmemorystream;
   r: boolean=false;
 begin
+  result:=0;
   ms:=luaclass_getClassObject(L);
   if lua_gettop(L)>=1 then
   try
@@ -316,6 +332,8 @@ end;
 function memorystream_saveToFileNoError(L: PLua_State): integer; cdecl;
 var ms: Tmemorystream;
 begin
+  result:=0;
+
   ms:=luaclass_getClassObject(L);
   if lua_gettop(L)>=1 then
   try
@@ -331,7 +349,6 @@ begin
     end;
   end;
 
-  result:=0;
 end;
 
 procedure memorystream_addMetaData(L: PLua_state; metatable: integer; userdata: integer );
@@ -364,7 +381,7 @@ end;
 
 procedure stringstream_addMetaData(L: PLua_state; metatable: integer; userdata: integer );
 begin
-  stream_addMetaData(L, metatable, userdata);
+  memorystream_addMetaData(L, metatable, userdata);
   luaclass_addPropertyToTable(L, metatable, userdata, 'DataString', stringstream_getDataString, nil);
 end;
 

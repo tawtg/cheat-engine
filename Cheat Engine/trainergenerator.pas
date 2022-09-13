@@ -16,7 +16,7 @@ uses
   ComCtrls, Buttons, Menus, ExtraTrainerComponents, CEFuncProc, HotkeyHandler,
   HotKeys, symbolhandler, luacaller, formdesignerunit, opensave, luafile,
   frmAdConfigUnit, cesupport, IconStuff, memoryrecordunit, frmSelectionlistunit,
-  MainUnit2, lua, luahandler, commonTypeDefs, math;
+  MainUnit2, lua, luahandler, commonTypeDefs, math, CECustomButton, betterControls;
 
 type
   TTrainerForm=class(TCEForm)
@@ -146,6 +146,7 @@ type
     procedure fillHotkeyList;
     procedure FillSound;
     procedure generateScript;
+    procedure generateScript2;
     procedure RestoreSupportCE(sender: tobject);
 
     procedure RefreshHotkeyItem(li: TListitem);
@@ -153,9 +154,9 @@ type
     trainerform: TTrainerForm;
     extrapanel: TCEPanel;
     //cheatpanel: TCEPanel;
-    aboutbutton: TCEButton;
+    aboutbutton: TCECustomButton;
     image: TCEImage;
-    closebutton: TCEButton;
+    closebutton: TCECustomButton;
     seperator: TCESplitter;
 
     hotkeylabel, descriptionlabel: tcelabel;
@@ -186,7 +187,7 @@ resourcestring
   rsButAllowDecrease = 'but allow decrease';
   rsTo = 'to';
   rsBy = 'by';
-  rsOnCloseWarning = 'This form had an onClose event. Good thing this was only a stub, else Cheat Engine would have terminated';
+  rsOnCloseWarning = 'This form had an onClose event. Good thing this was only a stub, else '+strCheatEngine+' would have terminated';
   rsAlreadyATrainerFormDefined =
       'There is already a trainer form defined. '
     +'Continuing will erase the current trainerscript and cheats in the '
@@ -211,7 +212,7 @@ resourcestring
     +'want to set the hotkey for';
   rsYouNeedACheatTableWithCheatEntries = 'You need a cheat table with cheat '
     +'entries';
-  rsDonTSupportCheatEngineOrYourself = 'Don''t support Cheat Engine (or '
+  rsDonTSupportCheatEngineOrYourself = 'Don''t support '+strCheatEngine+' (or '
     +'yourself)';
   rsThankYou = 'Thank you! :)';
   rsAaaaw = 'aaaaw :(';
@@ -260,13 +261,12 @@ begin
 end;
 
 procedure TfrmTrainerGenerator.buildcheatlist;
-var cheatpanel: TCEPanel;
+var cheatpanel: TScrollBox;
   i: integer;
   currentcheat, lastcheat: TCheat;
-
   hk: TMemoryRecordHotkey;
 begin
-  cheatpanel:=TCEPanel(trainerform.FindComponent('CHEATPANEL'));
+  cheatpanel:=TScrollBox(trainerform.FindComponent('CHEATPANEL'));
 
   if cheatpanel<>nil then
   begin
@@ -274,12 +274,11 @@ begin
     i:=0;
     while i<cheatpanel.ControlCount do
     begin
-      if cheatpanel.controls[i] is tcheat then
+      if cheatpanel.controls[i].Tag<>0 then
         cheatpanel.Controls[i].Free
       else
         inc(i);
     end;
-
 
     currentCheat:=nil;
     for i:=0 to lvCheats.Items.Count-1 do
@@ -289,25 +288,26 @@ begin
       currentcheat.parent:=cheatpanel;
       currentcheat.name:='CHEAT'+inttostr(i);
       currentcheat.cheatnr:=i;
+      currentcheat.tag:=i+1;
       currentcheat.AutoSize:=true;
 
       if lastcheat=nil then
       begin
         //top
-        currentcheat.left:=10;
-        currentcheat.top:=40;
+        currentcheat.left:=scalex(10,96);
+        currentcheat.top:=scaley(40,96);
       end
       else
       begin
         //next one
-        currentcheat.top:=lastcheat.Top+lastcheat.height+10;
+        currentcheat.top:=lastcheat.Top+lastcheat.height+scaley(10,96);
         currentcheat.left:=lastcheat.left;
       end;
 
       currentcheat.hotkeyleft:=hotkeylabel.left-currentcheat.left;
       currentcheat.descriptionleft:=descriptionlabel.left-currentcheat.left;
 
-      currentcheat.width:=cheatpanel.clientwidth-currentcheat.Left-2;
+      currentcheat.width:=cheatpanel.clientwidth-currentcheat.Left-scalex(2,96);
       currentcheat.anchors:=currentcheat.anchors+[akRight];
 
       currentcheat.Hotkey:=lvCheats.Items[i].Caption;
@@ -359,7 +359,7 @@ var i,j: integer;
 
   hotkeynamename, memrecname: string;
 
-  cheatpanel: TCEpanel;
+  cheatpanel: TScrollBox;
 begin
 
   //get the processlist
@@ -388,10 +388,10 @@ begin
         trainerform:=TTrainerForm(mainform.luaforms[i]);
 
         extrapanel:=TCEPanel(trainerform.FindComponent('EXTRAPANEL'));
-        cheatpanel:=TCEPanel(trainerform.FindComponent('CHEATPANEL'));
-        aboutbutton:=TCEButton(trainerform.FindComponent('ABOUTBUTTON'));
+        cheatpanel:=TScrollBox(trainerform.FindComponent('CHEATPANEL'));
+        aboutbutton:=TCECustomButton(trainerform.FindComponent('ABOUTBUTTON'));
         image:=TCEImage(trainerform.FindComponent('IMAGE'));
-        closebutton:=TCEButton(trainerform.FindComponent('CLOSEBUTTON'));
+        closebutton:=TCECustomButton(trainerform.FindComponent('CLOSEBUTTON'));
         seperator:=TCESplitter(trainerform.FindComponent('SEPERATOR'));
 
         hotkeylabel:=TCELabel(trainerform.FindComponent('HOTKEYLABEL'));
@@ -428,6 +428,10 @@ begin
     trainerform:=TTrainerForm.CreateNew(nil);
     trainerform.AutoSize:=false;
     trainerform.defaultTrainer:=true;
+    trainerform.DesignTimePPI:=screen.PixelsPerInch;
+
+    trainerform.width:=scalex(350,96);
+    trainerform.height:=scaley(240,96);
 
     mainform.luaforms.add(trainerform);
 
@@ -449,24 +453,30 @@ begin
     extrapanel.bevelouter:=bvLowered;
     extrapanel.parent:=trainerform;
 
-    cheatpanel:=Tcepanel.create(trainerform);
-    cheatpanel.align:=alclient;
+    cheatpanel:=TScrollBox.create(trainerform);
+    cheatpanel.BorderStyle:=bsNone;
     cheatpanel.name:='CHEATPANEL';
     cheatpanel.caption:='';
     cheatpanel.parent:=trainerform;
+    cheatpanel.AnchorSideTop.Control:=trainerform;
+    cheatpanel.AnchorSideTop.side:=asrTop;
+    cheatpanel.AnchorSideLeft.Control:=extrapanel;
+    cheatpanel.AnchorSideLeft.side:=asrRight;
+    cheatpanel.AnchorSideRight.Control:=trainerform;
+    cheatpanel.AnchorSideRight.side:=asrRight;
 
 
 
-
-
-
-
-    aboutbutton:=TCEButton.create(trainerform);
+    aboutbutton:=TCECustomButton.create(trainerform);
     aboutbutton.autosize:=true;
     aboutbutton.name:='ABOUTBUTTON';
     aboutbutton.caption:=rsAbout;
     aboutbutton.align:=albottom;
     aboutbutton.Parent:=extrapanel;
+    aboutbutton.RoundingX:=ScaleX(10,96);
+    aboutbutton.RoundingY:=ScaleX(10,96);
+    aboutbutton.DrawFocusRect:=false;
+
     with TLuaCaller.create do
     begin
       luaroutine:='AboutClick';
@@ -484,27 +494,41 @@ begin
     hotkeylabel:=Tcelabel.create(trainerform);
     hotkeylabel.name:='HOTKEYLABEL';
     hotkeylabel.caption:=rsHotkey;
-    hotkeylabel.left:=10;
-    hotkeylabel.top:=10;
+    hotkeylabel.left:=scalex(10,96);
+    hotkeylabel.top:=scaley(10,96);
     hotkeylabel.parent:=cheatpanel;
 
     descriptionlabel:=Tcelabel.create(trainerform);
     descriptionlabel.name:='DESCRIPTIONLABEL';
     descriptionlabel.caption:=rsEffect;
-    descriptionlabel.left:=100;
+    descriptionlabel.left:=100; //gets adjusted automatically
     descriptionlabel.top:=hotkeylabel.top;
     descriptionlabel.parent:=cheatpanel;
 
 
-    closebutton:=TCEButton.create(trainerform);
+    closebutton:=TCECustomButton.create(trainerform);
     closebutton.name:='CLOSEBUTTON';
     closebutton.caption:=rsClose;
-    closebutton.top:=cheatpanel.clientheight - closebutton.height-8;
-    closebutton.left:=cheatpanel.clientwidth div 2 - closebutton.width div 2;
-    closebutton.parent:=cheatpanel;
-    closebutton.autosize:=true;
+//    closebutton.top:=cheatpanel.clientheight - closebutton.height-8;
+//    closebutton.left:=cheatpanel.clientwidth div 2 - closebutton.width div 2;
 
-    closebutton.anchors:=[akBottom];
+    closebutton.AnchorSideLeft.Control:=cheatpanel;
+    closebutton.AnchorSideLeft.Side:=asrCenter;
+
+    closebutton.AnchorSideBottom.Control:=trainerform;
+    closebutton.AnchorSideBottom.Side:=asrBottom;
+    closebutton.RoundingX:=ScaleX(10,96);
+    closebutton.RoundingY:=ScaleX(10,96);
+    closebutton.parent:=trainerform;
+    closebutton.autosize:=true;
+    closebutton.DrawFocusRect:=false;
+    closebutton.anchors:=[akLeft, akBottom];
+
+    cheatpanel.AnchorSideBottom.Control:=closebutton;
+    cheatpanel.AnchorSideBottom.side:=asrTop;
+    cheatpanel.anchors:=[akTop, akLeft, akRight, akBottom];
+
+
 
     with TLuaCaller.create do
     begin
@@ -911,6 +935,11 @@ begin
     image.Picture.LoadFromFile(openpicturedialog1.FileName);
 end;
 
+procedure TfrmTrainerGenerator.generateScript2;
+begin
+
+end;
+
 procedure TfrmTrainerGenerator.generateScript;
 var generated: tstringlist;
   start,stop: integer;
@@ -970,7 +999,7 @@ begin
   l.add('');
   l.add('RequiredCEVersion='+floattostr(ceversion));
   l.add('if (getCEVersion==nil) or (getCEVersion()<RequiredCEVersion) then');
-  l.add('  messageDialog(''Please install Cheat Engine ''..RequiredCEVersion, mtError, mbOK)');
+  l.add('  messageDialog(''Please install '+strCheatEngine+' ''..RequiredCEVersion, mtError, mbOK)');
   l.add('  closeCE()');
   l.add('end');
 
@@ -1156,6 +1185,7 @@ begin
     else
       l.add('gPlaySoundOnAction=false');
 
+    l.add(trainerform.Name+'.fixDPI() --remove this if you have already taken care of DPI issues yourself');
     l.add(trainerform.Name+'.show()');
 
     if mAbout.lines.count>0 then
@@ -1578,6 +1608,9 @@ var f: string;
 begin
   protect:=false;
   generateScript;
+
+//  generateScript2;
+
 
   case cbOutput.ItemIndex of
     0:

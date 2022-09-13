@@ -5,7 +5,7 @@ unit LuaListview;
 interface
 
 uses
-  Classes, SysUtils, controls, comctrls, lua, lualib, lauxlib;
+  Classes, SysUtils, controls, comctrls, lua, lualib, lauxlib, betterControls;
 
 procedure initializeLuaListview;
 
@@ -24,9 +24,10 @@ begin
     owner:=nil;
 
   ListView:=TCEListView.Create(owner);
-  ListView.ViewStyle:=vsReport;
   if owner<>nil then
     ListView.Parent:=owner;
+  ListView.ViewStyle:=vsReport;
+
 
   luaclass_newClass(L, ListView);
   result:=1;
@@ -154,7 +155,6 @@ begin
   if lua_gettop(L)>=1 then
     listview.Selected:=lua_ToCEUserData(L, 1);
 
-
   result:=0;
 end;
 
@@ -166,6 +166,26 @@ begin
   luaclass_newClass(L, Listview.Canvas);
   result:=1;
 end;
+
+function listview_getTopItem(L: PLua_State): integer; cdecl;
+var
+  listview: TCustomListView;
+begin
+  listview:=luaclass_getClassObject(L);
+  luaclass_newClass(L, Listview.TopItem);
+  result:=1;
+end;
+
+function listview_getVisibleRowCount(L: PLua_State): integer; cdecl;
+var
+  listview: TCustomListView;
+begin
+  listview:=luaclass_getClassObject(L);
+  lua_pushinteger(L, Listview.VisibleRowCount);
+  result:=1;
+end;
+
+
 
 
 procedure listview_addMetaData(L: PLua_state; metatable: integer; userdata: integer );
@@ -189,6 +209,8 @@ begin
   luaclass_addPropertyToTable(L, metatable, userdata, 'ItemIndex', listview_getItemIndex, listview_setItemIndex);
   luaclass_addPropertyToTable(L, metatable, userdata, 'Selected', listview_getSelected, listview_setSelected);
   luaclass_addPropertyToTable(L, metatable, userdata, 'Canvas', listview_getCanvas, nil);
+  luaclass_addPropertyToTable(L, metatable, userdata, 'TopItem', listview_getTopItem, nil);
+  luaclass_addPropertyToTable(L, metatable, userdata, 'VisibleRowCount', listview_getVisibleRowCount, nil);
 
 
 end;

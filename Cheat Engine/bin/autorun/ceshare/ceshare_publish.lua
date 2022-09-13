@@ -174,8 +174,9 @@ function ceshare.UpdateCheat(id,data,title,headermd5, versionindependent, descri
 end
 
 function ceshare.PublishCheatClick(sender, cheatinfo) 
+  local loggedin=ceshare.LoggedIn or false
   --if not logged in, log in now
-  if ceshare.LoggedIn==nil then
+  if not loggedin then
     if not ceshare.spawnLoginDialog() then 
       return
     end
@@ -452,14 +453,11 @@ function ceshare.publishOrUpdate(cheatinfo) --cheatinfo is a set if an update
     
     if MainForm.miSignTable.Visible then
       if messageDialog(translate('Do you wish to sign this table?'),mtConfirmation,mbYes,mbNo)==mrYes then
-        local originalFile=MainForm.OpenDialog1.FileName
-        local originalDir=MainForm.OpenDialog1.InitialDir
-        MainForm.OpenDialog1.FileName=ceshare.path..'temptable.ct'
-        MainForm.OpenDialog1.InitialDir=ceshare.path
-        MainForm.miSignTable.doClick()
-        
-        MainForm.OpenDialog1.InitialDir=originalDir
-        MainForm.OpenDialog1.FileName=originalFile
+        local r,msg=signTable(ceshare.path..'temptable.ct')
+        if not r then
+          messageDialog(msg,mtError,mbOK)
+          return
+        end
       end
     end    
     

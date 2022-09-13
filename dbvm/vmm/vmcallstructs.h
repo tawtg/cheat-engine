@@ -40,6 +40,8 @@ typedef struct
 {
   VMCALL_BASIC vmcall;
   QWORD PhysicalAddress;
+  QWORD OptionalField1; //usermode loop address for DBVMBP
+  QWORD OptionalField2; //kernelmode loop address for DBVMBP
   int Size;
   int Options; //binary.
                //  Bit 0: 0=Log RIP once. 1=Log RIP multiple times (when different registers)
@@ -68,6 +70,18 @@ typedef struct
   DWORD resultsize;
   DWORD copied; //the number of bytes copied so far (This is a repeating instruction)
 } __attribute__((__packed__)) VMCALL_WATCH_RETRIEVELOG_PARAM, *PVMCALL_WATCH_RETRIEVELOG_PARAM;
+
+
+typedef struct
+{
+  VMCALL_BASIC vmcall;
+  QWORD results; //virtual address receiving log
+  DWORD resultsize;
+  DWORD copied; //the number of bytes copied so far (This is a repeating instruction)
+} __attribute__((__packed__)) VMCALL_TRACEONBP_RETRIEVELOG_PARAM, *PVMCALL_TRACEONBP_RETRIEVELOG_PARAM;
+
+
+
 
 typedef struct
 {
@@ -217,6 +231,48 @@ typedef struct
   CHANGEREGONBPINFO changereginfo;
 } __attribute__((__packed__)) VMCALL_CLOAK_CHANGEREG_PARAM, *PVMCALL_CLOAK_CHANGEREG_PARAM;
 
+
+
+typedef struct
+{
+  VMCALL_BASIC vmcall;
+  QWORD physicalAddress;
+  DWORD flags;
+  //bit 0: log fpu
+  //bit 1: log stack (say goodbye to your memory)
+  //bit todo: 1=hide stepping from pushf
+  //bit todo: 1=follow interrupts, 0=do not follow interrupts
+  DWORD tracecount;
+} __attribute__((__packed__)) VMCALL_CLOAK_TRACEONBP_PARAM, *PVMCALL_CLOAK_TRACEONBP_PARAM;
+
+
+
+typedef struct
+{
+  VMCALL_BASIC vmcall;
+  DWORD count;
+  DWORD maxcount;
+} __attribute__((__packed__)) VMCALL_CLOAK_TRACEONBP_GETSTATUS_PARAM, *PVMCALL_CLOAK_TRACEONBP_GETSTATUS_PARAM;
+
+
+typedef struct
+{
+  VMCALL_BASIC vmcall;
+  int force;
+} __attribute__((__packed__)) VMCALL_CLOAK_TRACEONBP_REMOVE_PARAM, *PVMCALL_CLOAK_TRACEONBP_REMOVE_PARAM;
+
+typedef struct
+{
+  VMCALL_BASIC vmcall;
+  QWORD results;
+  QWORD resultsize;
+  QWORD copied;
+} __attribute__((__packed__)) VMCALL_CLOAK_TRACEONBP_READLOG_PARAM, *PVMCALL_CLOAK_TRACEONBP_READLOG_PARAM;
+
+
+
+
+
 typedef struct
 {
   VMCALL_BASIC vmcall;
@@ -266,6 +322,8 @@ typedef struct
   int globaleventcounter[56];
 } __attribute__((__packed__)) VMCALL_GET_STATISTICS_PARAM, *PVMCALL_GET_STATISTICS_PARAM;
 #endif
+
+
 
 typedef struct
 {

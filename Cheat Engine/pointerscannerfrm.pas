@@ -27,7 +27,7 @@ uses
   WinSock2, Sockets, registry, PageMap, CELazySocket,
   PointerscanNetworkCommands, resolve, pointeraddresslist, pointerscanworker,
   PointerscanStructures, PointerscanController, sqlite3conn, sqldb,
-  frmSelectionlistunit, commonTypeDefs;
+  frmSelectionlistunit, commonTypeDefs, betterControls;
 
 {$endif}
 
@@ -349,7 +349,7 @@ type
     procedure PointerscanStart(sender: TObject);
     procedure doneui;
     procedure resyncloadedmodulelist;
-    procedure OpenPointerfile(filename: string);
+    procedure OpenPointerfile(filename: widestring);
     procedure stopscan(savestate: boolean);
     procedure PointerscanDone(sender: TObject; hasError: boolean; errorstring: string); //called by the pointerscan controller thread when done
   public
@@ -376,7 +376,7 @@ uses PointerscannerSettingsFrm, {$ifdef windows}frmMemoryAllocHandlerUnit,frmSor
   frmpointerrescanconnectdialogunit, frmMergePointerscanResultSettingsUnit,  {$endif}
   ProcessHandlerUnit, {$ifdef windows}frmResumePointerscanUnit,{$endif} PointerscanConnector,
   {$ifdef windows}frmSetupPSNNodeUnit,{$endif} PointerscanNetworkStructures, parsers, byteinterpreter,
-  CustomTypeHandler, ceregistry, vartypestrings;
+  CustomTypeHandler, ceregistry, vartypestrings, mainunit2;
 
 resourcestring
   rsErrorDuringScan = 'Error during scan';
@@ -1413,13 +1413,13 @@ begin
 
 
        if messagedlg(rsPSExportToDatabaseBiggerSizeOrNot, mtConfirmation, [mbyes, mbno], 0) = mryes then
-        begin
-          sqlite3.ExecuteDirect('create table results(ptrid integer not null, resultid integer, offsetcount integer, moduleid integer, moduleoffset integer '+offsetlist+', primary key (ptrid, resultid) );');
-          sqlite3.ExecuteDirect('CREATE INDEX "ptr_res_id_idx" ON "results"( ptrid, resultid );');
-          sqlite3.ExecuteDirect('CREATE INDEX "modid_modoff_idx" ON "results"( moduleid, moduleoffset );');
-        end
-        else
-          sqlite3.ExecuteDirect('create table results(ptrid integer not null, resultid integer, offsetcount integer, moduleid integer, moduleoffset integer '+offsetlist+');');
+       begin
+         sqlite3.ExecuteDirect('create table results(ptrid integer not null, resultid integer, offsetcount integer, moduleid integer, moduleoffset bigint '+offsetlist+', primary key (ptrid, resultid) );');
+         sqlite3.ExecuteDirect('CREATE INDEX "ptr_res_id_idx" ON "results"( ptrid, resultid );');
+         sqlite3.ExecuteDirect('CREATE INDEX "modid_modoff_idx" ON "results"( moduleid, moduleoffset );');
+       end
+       else
+         sqlite3.ExecuteDirect('create table results(ptrid integer not null, resultid integer, offsetcount integer, moduleid integer, moduleoffset bigint '+offsetlist+');');
       end
       else
       begin
@@ -2018,7 +2018,7 @@ begin
   SaveFormPosition(self);
 
   reg:=tregistry.create;
-  if reg.OpenKey('\Software\Cheat Engine\Pointerscan', true) then
+  if reg.OpenKey('\Software\'+strCheatEngine+'\Pointerscan', true) then
   begin
     reg.writeInteger('Display Type', cbtype.itemindex);
     reg.writeBool('Display Signed',miSigned.checked);
@@ -2540,7 +2540,7 @@ begin
 
 end;
 
-procedure Tfrmpointerscanner.OpenPointerfile(filename: string);
+procedure Tfrmpointerscanner.OpenPointerfile(filename: widestring);
 var
   i: integer;
 
@@ -2614,7 +2614,7 @@ end;
 procedure Tfrmpointerscanner.Open1Click(Sender: TObject);
 begin
   if opendialog1.Execute then
-    OpenPointerfile(utf8toansi(Opendialog1.filename));
+    OpenPointerfile(UTF8ToString(Opendialog1.filename));
 end;
 
 function TRescanWorker.isMatchToValue(p:pointer): boolean;
@@ -3665,7 +3665,7 @@ begin
 
   reg:=TRegistry.Create;
 
-  if reg.OpenKey('\Software\Cheat Engine\Pointerscan', false) then
+  if reg.OpenKey('\Software\'+strCheatEngine+'\Pointerscan', false) then
   begin
     if reg.ValueExists('Display Type') then
       cbtype.itemindex:=reg.ReadInteger('Display Type');
@@ -3835,9 +3835,11 @@ begin
         3: vtype:=vtQword;
         4: vtype:=vtSingle;
         5: vtype:=vtDouble;
+        6: vtype:=vtString;
+        7: vtype:=vtUnicodeString;
       end;
 
-      if cbtype.itemindex>=6 then
+      if cbtype.itemindex>=8 then
       begin
         vtype:=vtCustom;
         ct:=TCustomType(cbtype.Items.Objects[cbtype.itemindex]);

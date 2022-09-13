@@ -42,27 +42,33 @@ typedef union _MTRRDEF
   };
 } MTRRDEF, *PMTRRDEF;
 
-int hasMTRRsupport;
-MTRRCAP MTRRCapabilities;
-MTRRDEF MTRRDefType;
+extern int hasMTRRsupport;
+extern MTRRCAP MTRRCapabilities;
+extern MTRRDEF MTRRDefType;
 
-int has_EPT_1GBsupport;
-int has_EPT_2MBSupport;
-int has_EPT_ExecuteOnlySupport;
-int has_EPT_INVEPTSingleContext;
-int has_EPT_INVEPTAllContext;
+extern int has_EPT_1GBsupport;
+extern int has_EPT_2MBSupport;
+extern int has_EPT_ExecuteOnlySupport;
+extern int has_EPT_INVEPTSingleContext;
+extern int has_EPT_INVEPTAllContext;
 
-int hasUnrestrictedSupport;
-int hasVPIDSupport;
+extern int hasUnrestrictedSupport;
+extern int hasVPIDSupport;
+extern int canToggleCR3Exit;
+extern int canExitOnNMI;
+extern int hasVMCSShadowingSupport;
 
-int has_VPID_INVVPIDIndividualAddress;
-int has_VPID_INVVPIDSingleContext;
-int has_VPID_INVVPIDAllContext;
-int has_VPID_INVVPIDSingleContextRetainingGlobals;
+extern int has_VPID_INVVPIDIndividualAddress;
+extern int has_VPID_INVVPIDSingleContext;
+extern int has_VPID_INVVPIDAllContext;
+extern int has_VPID_INVVPIDSingleContextRetainingGlobals;
 
 //AMD
-int has_NP_1GBsupport;
-int has_NP_2MBsupport;
+extern int has_VGIFSupport;
+extern int has_NP_1GBsupport;
+extern int has_NP_2MBsupport;
+
+
 
 
 
@@ -83,8 +89,8 @@ void vmx_removeMSRReadExit(DWORD msrValue);
 void vmx_setMSRWriteExit(DWORD msrValue);
 void vmx_removeMSRWriteExit(DWORD msrValue);
 
-void vmx_enableTSCHook(void);
-void vmx_disableTSCHook(void);
+void vmx_enableTSCHook(pcpuinfo currentcpuinfo);
+void vmx_disableTSCHook(pcpuinfo currentcpuinfo);
 
 
 void setupVMX(pcpuinfo currentcpuinfo);

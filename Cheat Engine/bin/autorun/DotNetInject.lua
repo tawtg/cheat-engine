@@ -346,6 +346,44 @@ dealloc(dllpath)
 ]]
 
 function injectDotNetDLL(path, classname, methodname, parameter, timeout)
+  if monopipe then
+    --inject the dll using mono
+    local assembly=mono_loadAssemblyFromFile(path)
+    
+    if (classname==nil) and (method==nil) then return assembly end
+    
+    if assembly and classname and methodname then
+      local image=mono_getImageFromAssembly(assembly)
+      if image then
+        --find class
+        local c=mono_image_enumClasses(image)
+        for i=1,#c do        
+          if c[i].classname==classname then
+            local m=mono_class_enumMethods(c[i].class)
+            if m.name==methodname then
+              local result
+              if parameter then
+                local args={}
+                args[1]={}
+                args[1].type=vtString
+                args[1].value=parameter               
+                
+                result=mono_invoke_method(nil,m,nil,{})
+              else
+                result=mono_invoke_method(nil,m,nil,nil)
+              end
+            
+              return result
+            end
+          end
+        end
+      end
+      
+    end
+    
+    return
+  end
+  
 
   local m=enumModules()
   local isDotNetCore=false
@@ -371,7 +409,7 @@ function injectDotNetDLL(path, classname, methodname, parameter, timeout)
   elseif isDotNetStandard then
     script=DotNetStandardInjectScript
   else
-    return nil,-4 --no dotnet architecture detected
+    return nil,-4 --no dotnet architecture detected. Todo: Create a .net host in the target?
   end
 
 
@@ -403,3 +441,4 @@ function injectDotNetDLL(path, classname, methodname, parameter, timeout)
 end
 
 injectDotNetLibrary=injectDotNetDLL
+

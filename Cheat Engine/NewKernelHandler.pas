@@ -5,10 +5,10 @@ unit NewKernelHandler;
 interface
 
 {$ifdef darwin}
-uses SysUtils, MacOSAll, MacOSXPosix, macport;
+uses SysUtils, MacOSAll, MacOSXPosix, macport, macportdefines;
 {$else}
 uses jwawindows, windows,LCLIntf,sysutils, dialogs, classes, controls,
-     dbk32functions, vmxfunctions,debug, multicpuexecution, contnrs, Clipbrd;
+     {$ifndef STANDALONECH}dbk32functions, vmxfunctions,debug, multicpuexecution,globals,{$endif} contnrs, Clipbrd;
 {$endif}
 
 const dbkdll='DBK32.dll';
@@ -63,15 +63,17 @@ TModuleEntry32 = MODULEENTRY32;
 {$ifdef cpu32}
 const
   CONTEXT_EXTENDED_REGISTERS = (CONTEXT_i386 or $00000020);
+
+type
+   M128A = record
+        Low: ULONGLONG;
+        High: LONGLONG;
+     end;
+   _M128A = M128A;
+   TM128A = M128A;
+   PM128A = TM128A;
+
 {$endif}
-
-{$ifdef cpu64}
-const
-  CONTEXT_EXTENDED_REGISTERS = 0;
-
-//  CONTEXT_XSTATE          = (CONTEXT_AMD64 or $00100040);
-  CONTEXT_XSTATE          = (CONTEXT_AMD64 or $00000040);
-
 
 type
    XMM_SAVE_AREA32 = record
@@ -95,6 +97,16 @@ type
    _XMM_SAVE_AREA32 = XMM_SAVE_AREA32;
    TXmmSaveArea = XMM_SAVE_AREA32;
    PXmmSaveArea = ^TXmmSaveArea;
+
+{$ifdef cpu64}
+const
+  CONTEXT_EXTENDED_REGISTERS = 0;
+
+//  CONTEXT_XSTATE          = (CONTEXT_AMD64 or $00100040);
+  CONTEXT_XSTATE          = (CONTEXT_AMD64 or $00000040);
+
+
+
 
 const
    LEGACY_SAVE_AREA_LENGTH = sizeof(XMM_SAVE_AREA32);
@@ -242,20 +254,86 @@ type
      R8: DWORD;
      R9: DWORD;
      R10: DWORD;
-     FP: DWORD;
-     IP: DWORD;
-     SP: DWORD;
-     LR: DWORD;
-     PC: DWORD;
+     FP: DWORD;  //R11
+     IP: DWORD;  //R12
+     SP: DWORD;  //R13
+     LR: DWORD;  //R14
+     PC: DWORD;  //R15
      CPSR: DWORD;
      ORIG_R0: DWORD;
+
+     fpu: array [0..31] of uint64;
+     fpureg: dword;
   end;
 
   PARMCONTEXT=^TARMCONTEXT;
 
+  TARM64CONTEXT_REGISTERS=packed record
+      case boolean of
+            true: (
+          X0: QWORD;
+          X1: QWORD;
+          X2: QWORD;
+          X3: QWORD;
+          X4: QWORD;
+          X5: QWORD;
+          X6: QWORD;
+          X7: QWORD;
+          X8: QWORD;
+          X9: QWORD;
+          X10: QWORD;
+          X11: QWORD;
+          X12: QWORD;
+          X13: QWORD;
+          X14: QWORD;
+          X15: QWORD;
+          X16: QWORD;
+          X17: QWORD;
+          X18: QWORD;
+          X19: QWORD;
+          X20: QWORD;
+          X21: QWORD;
+          X22: QWORD;
+          X23: QWORD;
+          X24: QWORD;
+          X25: QWORD;
+          X26: QWORD;
+          X27: QWORD;
+          X28: QWORD;
+          X29: QWORD;
+          X30: QWORD;  );
+
+            false: (
+            X: Array [0..30] of QWORD;
+            );
+
+   end;
+
+  {$ifndef darwin}  //defined in macport.pas
+  TARM64CONTEXT=record
+       regs: TARM64CONTEXT_REGISTERS;
+       SP:  QWORD;
+       PC:  QWORD;
+       PSTATE: QWORD;
+
+       fp: record
+         vregs: array [0..31] of m128a; //  __uint128_t vregs[32];
+         fpsr: UINT32; // __u32 fpsr;
+         fpcr: UINT32; // __u32 fpcr;
+         reserved: array [0..1] of UINT32; //             __u32 __reserved[2];
+       end;
+  end;
+
+  PARM64CONTEXT=^TARM64CONTEXT;
+  {$endif}
+
   {$ifdef windows}
-//credits to jedi code library for filling in the "extended registers"
 type
+
+
+
+//credits to jedi code library for filling in the "extended registers"
+
   TJclMMContentType = (mt8Bytes, mt4Words, mt2DWords, mt1QWord, mt2Singles, mt1Double);
 
   TJclMMRegister = packed record
@@ -377,7 +455,7 @@ type
     Esp: DWORD;
     SegSs: DWORD;
 
-    ext: TExtendedRegisters;
+    ext: TXmmSaveArea;
   end;
   {$ifdef cpu64}
   CONTEXT32=_CONTEXT32;
@@ -386,6 +464,7 @@ type
   {$else}
   CONTEXT=_CONTEXT;
   CONTEXT32=_CONTEXT;
+  PCONTEXT32=^CONTEXT32;
   TContext=CONTEXT;
   PContext = ^TContext;
   {$endif}
@@ -499,7 +578,7 @@ type TGetThreadListEntryOffset=function: dword; stdcall;
 
 
 
-type TGetPhysicalAddress=function(hProcess:THandle;lpBaseAddress:pointer;var Address:int64): BOOL; stdcall;
+type TGetPhysicalAddress=function(hProcess:THandle;lpBaseAddress:pointer;var Address:qword): BOOL; stdcall;
 type TGetCR4=function:ptrUint; stdcall;
 type TGetCR3=function(hProcess:THANDLE;var CR3: QWORD):BOOL; stdcall;
 type TSetCR3=function(hProcess:THANDLE;CR3: ptrUint):BOOL; stdcall;
@@ -584,9 +663,10 @@ procedure DONTUseDBKOpenProcess;
 procedure UseDBKQueryMemoryRegion;
 procedure UseDBKReadWriteMemory;
 procedure UseDBKOpenProcess;
-
+ {$endif}
 procedure DBKFileAsMemory(fn:string; baseaddress: ptruint=0); overload;
 procedure DBKFileAsMemory; overload;
+{$ifdef windows}
 function VirtualQueryExPhysical(hProcess: THandle; lpAddress: Pointer; var lpBuffer: TMemoryBasicInformation; dwLength: DWORD): DWORD; stdcall;
 procedure DBKPhysicalMemory;
 procedure DBKPhysicalMemoryDBVM;
@@ -597,11 +677,14 @@ procedure OutputDebugString(msg: string);
 
 
 procedure NeedsDBVM(Reason: string='');
-function loaddbvmifneeded(reason:string=''): BOOL; stdcall;
-function isRunningDBVM: boolean;
-function isDBVMCapable: boolean;
+
 
 {$endif}
+function loaddbvmifneeded(reason:string=''): BOOL; stdcall;
+
+
+function isRunningDBVM: boolean;
+function isDBVMCapable: boolean;
 function hasEPTSupport: boolean;
 {$ifdef windows}
 
@@ -611,18 +694,26 @@ function isAMD: boolean;
 {$endif}
 function Is64bitOS: boolean;
 function Is64BitProcess(processhandle: THandle): boolean;
-{$ifdef windows}
 
 
 //I could of course have made it a parameter thing, but I'm lazy
 
 
 function WriteProcessMemory(hProcess: THandle; const lpBaseAddress: Pointer; lpBuffer: Pointer; nSize: DWORD; var lpNumberOfBytesWritten: PTRUINT): BOOL; stdcall;
+function ReadProcessMemory(hProcess: THandle; lpBaseAddress, lpBuffer: Pointer; nSize: size_t; var lpNumberOfBytesRead: PTRUINT): BOOL; stdcall;
+function VirtualQueryEx(hProcess: THandle; lpAddress: Pointer; var lpBuffer: TMemoryBasicInformation; dwLength: DWORD): DWORD; stdcall;
+
+{$ifdef windows}
 
 
 function VirtualToPhysicalCR3(cr3: QWORD; VirtualAddress: QWORD; var PhysicalAddress: QWORD): boolean;
 function ReadProcessMemoryCR3(cr3: QWORD; lpBaseAddress, lpBuffer: Pointer; nSize: DWORD; var lpNumberOfBytesRead: PTRUINT): BOOL; stdcall;
 function WriteProcessMemoryCR3(cr3: QWORD; lpBaseAddress, lpBuffer: Pointer; nSize: DWORD; var lpNumberOfBytesWritten: PTRUINT): BOOL; stdcall;
+function VirtualQueryExCR3(cr3: QWORD; lpAddress: Pointer; var lpBuffer: TMemoryBasicInformation; dwLength: DWORD): DWORD; stdcall;
+
+
+function GetPageInfoCR3(cr3: QWORD; VirtualAddress: ptruint; out lpBuffer: TMemoryBasicInformation): boolean;
+function GetNextReadablePageCR3(cr3: QWORD; VirtualAddress: ptruint; out ReadableVirtualAddress: ptruint): boolean;
 
 
 
@@ -634,12 +725,17 @@ var
   GetDeviceDriverFileName :TGetDeviceDriverFileName;
 {$endif}
 
-  ReadProcessMemory     :TReadProcessMemory;
+
 {$ifdef windows}
-  ReadProcessMemory64   :TReadProcessMemory64;  
+  ReadProcessMemory64   :TReadProcessMemory64;
+  {$endif}
+  ReadProcessMemoryActual     :TReadProcessMemory;
   WriteProcessMemoryActual  :TWriteProcessMemory;
+
+  defaultRPM: pointer;
+  defaultWPM: pointer;
   //WriteProcessMemory64  :TWriteProcessMemory64;
-{$endif}
+
   GetThreadContext      :TGetThreadContext;
   SetThreadContext      :TSetThreadContext;
   OpenProcess           :TOpenProcess;
@@ -677,7 +773,7 @@ var
   VirtualProtect        :TVirtualProtect;
   VirtualProtectEx      :TVirtualProtectEx;
 {$endif}
-  VirtualQueryEx        :TVirtualQueryEx;
+  VirtualQueryExActual  :TVirtualQueryEx;
 {$ifdef windows}
   VirtualAllocEx        :TVirtualAllocEx;
   VirtualFreeEx         :TVirtualFreeEx;
@@ -813,11 +909,15 @@ var
     MAXPHYADDRMASKPB: QWORD=QWORD($ffffff000); //same as MAXPHYADDRMASK but also aligns it to a page boundary
     MAXPHYADDRMASKPBBIG: QWORD=QWORD($fffe00000);
 
+    MAXLINEARADDR: byte;//number of bits in a virtual address. All bits after it have to match
+    MAXLINEARADDRTEST: QWORD;
+    MAXLINEARADDRMASK: QWORD;
 
 
 implementation
 
 {$ifndef JNI}
+{$ifndef STANDALONECH}
 uses
      {$ifdef cemain}
      plugin,
@@ -825,6 +925,7 @@ uses
      {$endif}
      Filehandler,  //so I can let readprocessmemory point to ReadProcessMemoryFile in filehandler
      autoassembler, frmEditHistoryUnit, frmautoinjectunit, cpuidUnit, MemoryBrowserFormUnit;
+{$endif}
 {$endif}
 
 
@@ -840,9 +941,228 @@ resourcestring
   rsCouldnTBeOpened = '%s couldn''t be opened';
   rsDBVMIsNotLoadedThisFeatureIsNotUsable = 'DBVM is not loaded. This feature is not usable';
 
-{$ifdef windows}
+ {$ifndef JNI}
 
-{$ifndef JNI}
+
+function verifyAddress(a: qword): boolean; inline;
+begin
+  result:=false;
+  if (a and MAXLINEARADDRTEST)>0 then
+  begin
+    //bits MAXLINEARADDR to 64 need to be 1
+    result:=(a and MAXLINEARADDRMASK) = MAXLINEARADDRMASK;
+  end
+  else
+  begin
+    //bits MAXLINEARADDR to 64 need to be 0
+    result:=(a and MAXLINEARADDRMASK) = 0;
+  end;
+end;
+
+     {$ifdef windows}
+function pageEntryToProtection(entry: qword): dword;
+var r,w,x: boolean;
+begin
+  r:=(entry and 1)=1; //present
+  w:=(entry and 2)=2; //writable
+  x:=not ((entry and (qword(1) shl 63))=(qword(1) shl 63)); //no execute
+
+  if not r then exit(PAGE_NOACCESS);
+  if w then
+  begin
+    if x then
+      exit(PAGE_EXECUTE_READWRITE)
+    else
+      exit(PAGE_READWRITE);
+  end
+  else
+  begin
+    if x then
+      exit(PAGE_EXECUTE_READ)
+    else
+      exit(PAGE_READONLY);
+  end;
+end;
+
+function GetNextReadablePageCR3(cr3: QWORD; VirtualAddress: ptruint; out ReadableVirtualAddress: ptruint): boolean;
+var
+  pml4index: integer;
+  pagedirptrindex: integer;
+  pagedirindex: integer;
+  pagetableindex: integer;
+  offset: integer;
+
+  pml4entry: QWORD;
+  pagedirptrentry: QWORD;
+  pagedirentry: qword;
+  pagetableentry: qword;
+
+
+  pml4page: array [0..512] of qword;
+  pagedirptrpage: array [0..512] of qword;
+  pagedirpage: array [0..512] of qword;
+  pagetablepage: array [0..512] of qword;
+
+  x: PTRUINT;
+  found: boolean=false;
+begin
+  cr3:=cr3 and MAXPHYADDRMASKPB;
+
+  result:=false;
+  pml4index:=(VirtualAddress shr 39) and $1ff;
+  pagedirptrindex:=(VirtualAddress shr 30) and $1ff;
+  pagedirindex:=(VirtualAddress shr 21) and $1ff;
+  pagetableindex:=(VirtualAddress shr 12) and $1ff;
+
+  if ReadPhysicalMemory(0,pointer(cr3),@pml4page,4096,x) then
+  begin
+    while pml4index<512 do
+    begin
+      if (pml4page[pml4index] and 1)=1 then
+      begin
+        x:=pml4page[pml4index] and MAXPHYADDRMASKPB;
+        if ReadPhysicalMemory(0,pointer(x),@pagedirptrpage,4096,x) then
+        begin
+          while pagedirptrindex<512 do
+          begin
+            if (pagedirptrpage[pagedirptrindex] and 1)=1 then
+            begin
+              x:=pagedirptrpage[pagedirptrindex] and MAXPHYADDRMASKPB;
+              if ReadPhysicalMemory(0,pointer(x),@pagedirpage,4096,x) then
+              begin
+                while pagedirindex<512 do
+                begin
+                  if (pagedirpage[pagedirindex] and 1)=1 then
+                  begin
+                    //present
+                    if (pagedirpage[pagedirindex] and (1 shl 7))=(1 shl 7) then
+                    begin
+                      if (pml4index and (1<<8))=(1<<8) then
+                        pml4index:=pml4index or ((qword($ffffffffffffffff) shl 8));
+
+                      ReadableVirtualAddress:=(QWORD(pagedirindex) shl 21)+(QWORD(pagedirptrindex) shl 30)+(QWORD(pml4index) shl 39);
+                      exit(true);
+                    end
+                    else
+                    begin
+                      //normal pagedir , go through the pagetables
+                      x:=pagedirpage[pagedirindex] and MAXPHYADDRMASKPB;
+                      if ReadPhysicalMemory(0,pointer(x),@pagetablepage,4096,x) then
+                      while pagetableindex<512 do
+                      begin
+                        if (pagetablepage[pagetableindex] and 1)=1 then
+                        begin
+                          if (pml4index and (1<<8))=(1<<8) then
+                            pml4index:=pml4index or ((qword($ffffffffffffffff) shl 8));
+
+                          ReadableVirtualAddress:=(QWORD(pagetableindex) shl 12)+(QWORD(pagedirindex) shl 21)+(QWORD(pagedirptrindex) shl 30)+(QWORD(pml4index) shl 39);
+                          exit(true);
+                        end;
+                        inc(pagetableindex);
+                      end;
+                    end;
+                  end;
+
+                  pagetableindex:=0;
+                  inc(pagedirindex);
+                end;
+              end;
+            end;
+
+            pagedirindex:=0;
+            pagetableindex:=0;
+            inc(pagedirptrindex);
+          end;
+        end; //rpm of pml4page[pml4index]
+      end;
+
+      //still here, nothing found, next pml4 index
+      pagedirptrindex:=0;
+      pagedirindex:=0;
+      pagetableindex:=0;
+      inc(pml4index);
+    end; //rpm
+  end;
+  //end of pml4 index, fail
+
+
+end;
+
+function GetPageInfoCR3(cr3: QWORD; VirtualAddress: ptruint; out lpBuffer: TMemoryBasicInformation): boolean;
+var
+  pml4index: integer;
+  pagedirptrindex: integer;
+  pagedirindex: integer;
+  pagetableindex: integer;
+  offset: integer;
+
+  pml4entry: QWORD;
+  pagedirptrentry: QWORD;
+  pagedirentry: qword;
+  pagetableentry: qword;
+
+  x: PTRUINT;
+begin
+  cr3:=cr3 and MAXPHYADDRMASKPB;
+
+  lpbuffer.BaseAddress:=pointer(VirtualAddress and $fffffffffffff000);
+  result:=false;
+  pml4index:=(VirtualAddress shr 39) and $1ff;
+  pagedirptrindex:=(VirtualAddress shr 30) and $1ff;
+  pagedirindex:=(VirtualAddress shr 21) and $1ff;
+  pagetableindex:=(VirtualAddress shr 12) and $1ff;
+  offset:=VirtualAddress and $fff;
+
+  if ReadPhysicalMemory(0,pointer(cr3+pml4index*8),@pml4entry,8,x) then
+  begin
+    if (pml4entry and 1)=1 then
+    begin
+      pml4entry:=pml4entry and MAXPHYADDRMASKPB;
+      if ReadPhysicalMemory(0,pointer(pml4entry+pagedirptrindex*8),@pagedirptrentry,8,x) then
+      begin
+        if (pagedirptrentry and 1)=1 then
+        begin
+          pagedirptrentry:=pagedirptrentry and MAXPHYADDRMASKPB;
+          if ReadPhysicalMemory(0,pointer(pagedirptrentry+pagedirindex*8),@pagedirentry,8,x) then
+          begin
+            if (pagedirentry and 1)=1 then
+            begin
+              if (pagedirentry and (1 shl 7))>0 then  //PS==1
+              begin
+                lpbuffer.AllocationBase:=pointer(VirtualAddress and $ffffffffffe00000);
+                lpbuffer.AllocationProtect:=PAGE_EXECUTE_READWRITE;
+                lpbuffer.Protect:=pageEntryToProtection(pagedirentry);
+                lpbuffer.RegionSize:=$200000-(lpbuffer.BaseAddress-lpbuffer.AllocationBase);
+                lpbuffer.state:=MEM_COMMIT;
+                lpbuffer._Type:=MEM_PRIVATE;
+                exit(true);
+              end
+              else
+              begin
+                //has pagetable
+                pagedirentry:=pagedirentry and MAXPHYADDRMASKPB;
+                if ReadPhysicalMemory(0,pointer(pagedirentry+pagetableindex*8),@pagetableentry,8,x) then
+                begin
+                  if (pagetableentry and 1)=1 then
+                  begin
+                    lpbuffer.AllocationBase:=pointer(VirtualAddress and $fffffffffffff000);
+                    lpbuffer.AllocationProtect:=PAGE_EXECUTE_READWRITE;
+                    lpbuffer.Protect:=pageEntryToProtection(pagetableentry);
+                    lpbuffer.RegionSize:=4096;
+                    lpbuffer.state:=MEM_COMMIT;
+                    lpbuffer._Type:=MEM_PRIVATE;
+                    exit(true);
+                  end;
+                end;
+              end;
+            end;
+          end;
+        end;
+      end;
+    end;
+  end;
+end;
+
 function VirtualToPhysicalCR3(cr3: QWORD; VirtualAddress: QWORD; var PhysicalAddress: QWORD): boolean;
 var
   pml4index: integer;
@@ -858,6 +1178,8 @@ var
 
   x: PTRUINT;
 begin
+  cr3:=cr3 and MAXPHYADDRMASKPB;
+
   result:=false;
   pml4index:=(VirtualAddress shr 39) and $1ff;
   pagedirptrindex:=(VirtualAddress shr 30) and $1ff;
@@ -905,6 +1227,57 @@ begin
   end;
 end;
 
+
+function VirtualQueryExCR3(cr3: QWORD; lpAddress: Pointer; var lpBuffer: TMemoryBasicInformation; dwLength: DWORD): DWORD; stdcall;
+var
+  currentmbi: TMEMORYBASICINFORMATION;
+  nextreadable: ptruint;
+  p: ptruint;
+begin
+  if not verifyAddress(qword(lpAddress)) then
+    exit(0);
+
+  result:=0;
+  lpbuffer.BaseAddress:=pointer(ptruint(lpAddress) and $fffffffffffff000);
+
+  if GetPageInfoCR3(cr3,qword(lpAddress), lpBuffer) then
+  begin
+    p:=ptruint(lpBuffer.BaseAddress)+lpBuffer.RegionSize;
+
+    while lpBuffer.RegionSize<$20000000 do
+    begin
+      if GetPageInfoCR3(cr3,p,currentmbi) then
+      begin
+        if currentmbi.Protect=lpBuffer.Protect then
+        begin
+          p:=ptruint(currentmbi.BaseAddress)+currentmbi.RegionSize;
+          lpBuffer.RegionSize:=p-ptruint(lpBuffer.BaseAddress);
+        end
+        else
+          exit(dwLength); //different protection
+      end
+      else
+        exit(dwlength); //unreadable
+    end;
+
+    lpBuffer.RegionSize:=p-ptruint(lpBuffer.BaseAddress);
+  end
+  else
+  begin
+    //unreadable
+
+    if GetNextReadablePageCR3(cr3, ptruint(lpaddress), nextReadable) then
+    begin
+      lpBuffer.AllocationBase:=lpbuffer.BaseAddress;
+      lpBuffer.RegionSize:=nextReadable-ptruint(lpBuffer.BaseAddress);
+      lpbuffer.Protect:=PAGE_NOACCESS;
+      lpbuffer.state:=MEM_FREE;
+      lpbuffer._Type:=0;
+      exit(dwlength);
+    end
+  end;
+end;
+
 function ReadProcessMemoryCR3(cr3: QWORD; lpBaseAddress, lpBuffer: Pointer; nSize: DWORD; var lpNumberOfBytesRead: PTRUINT): BOOL; stdcall;
 var
   currentAddress: qword;
@@ -914,6 +1287,12 @@ var
 
   blocksize: integer;
 begin
+  if not verifyAddress(qword(lpBaseAddress)) then
+  begin
+    lpNumberOfBytesRead:=0;
+    exit(false);
+  end;
+
   cr3:=cr3 and MAXPHYADDRMASKPB;
 
   result:=false;
@@ -949,6 +1328,12 @@ var
 
   blocksize: integer;
 begin
+  if not verifyAddress(qword(lpBaseAddress)) then
+  begin
+    lpNumberOfBytesWritten:=0;
+    exit(false);
+  end;
+
   cr3:=cr3 and MAXPHYADDRMASKPB;
 
   result:=false;
@@ -974,13 +1359,30 @@ begin
   result:=true;
 end;
 
+{$endif}
+
+
+
 function WriteProcessMemory(hProcess: THandle; const lpBaseAddress: Pointer; lpBuffer: Pointer; nSize: DWORD; var lpNumberOfBytesWritten: PTRUINT): BOOL; stdcall;
 var
+{$ifndef STANDALONECH}
   wle: TWriteLogEntry;
+{$endif}
   x: PTRUINT;
-
+  cr3: ptruint;
 begin
+   {$ifndef darwin}
+  if not verifyAddress(qword(lpBaseAddress)) then
+  begin
+    lpNumberOfBytesWritten:=0;
+    exit(false);
+  end;
+   {$endif}
+
+  result:=false;
+   {$ifndef STANDALONECH}
   wle:=nil;
+
   if logWrites then
   begin
     if nsize<64*1024*1024 then
@@ -993,8 +1395,27 @@ begin
       wle.originalsize:=x;
     end;
   end;
+{$endif}
 
+  {$ifdef windows}
+  {$ifdef cpu64}
+
+  if (((qword(lpBaseAddress) and (qword(1) shl 63))<>0) and //kernelmode access
+      (@WriteProcessMemoryActual=defaultWPM) and
+      isRunningDBVM) //but DBVM is loaded
+  or
+      DBVMWatchBPActive
+  then
+  begin
+    if dbk32functions.GetCR3(hProcess, cr3) then   //todo: maybe just a getkernelcr3
+      result:=WriteProcessMemoryCR3(cr3, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesWritten);
+  end
+  else
+  {$endif}
+  {$endif}
   result:=WriteProcessMemoryActual(hProcess, lpBaseAddress, lpbuffer, nSize, lpNumberOfBytesWritten);
+
+{$ifndef STANDALONECH}
   if result and logwrites and (wle<>nil) then
   begin
     getmem(wle.newbytes, lpNumberOfBytesWritten);
@@ -1002,16 +1423,52 @@ begin
     wle.newsize:=x;
     addWriteLogEntryToList(wle);
   end;
-
-end;
-{$else}
-
-function WriteProcessMemory(hProcess: THandle; const lpBaseAddress: Pointer; lpBuffer: Pointer; nSize: DWORD; var lpNumberOfBytesWritten: PTRUINT): BOOL; stdcall;
-begin
-  result:=WriteProcessMemoryActual(hProcess, lpBaseAddress, lpbuffer, nSize, lpNumberOfBytesWritten);
-end;
-
 {$endif}
+end;
+
+function ReadProcessMemory(hProcess: THandle; lpBaseAddress, lpBuffer: Pointer; nSize: size_t; var lpNumberOfBytesRead: PTRUINT): BOOL; stdcall;
+var cr3: ptruint;
+begin
+  {$ifndef darwin}
+  if not verifyAddress(qword(lpBaseAddress)) then
+  begin
+    lpNumberOfBytesRead:=0;
+    exit(false);
+  end;
+  {$endif}
+
+
+  {$ifdef windows}
+  {$ifdef cpu64}
+  if (((qword(lpBaseAddress) and (qword(1) shl 63))<>0) and //kernelmode access
+     (defaultRPM=@ReadProcessMemoryActual) and
+     isRunningDBVM) //but DBVM is loaded
+  or
+     DBVMWatchBPActive
+  then
+  begin
+    if dbk32functions.GetCR3(hProcess, cr3) then
+      exit(ReadProcessMemoryCR3(cr3, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesRead));
+  end;
+  {$endif}
+  {$endif}
+  result:=ReadProcessMemoryActual(hProcess,lpBaseAddress, lpBuffer, nsize, lpNumberOfBytesRead);
+end;
+
+function VirtualQueryEx(hProcess: THandle; lpAddress: Pointer; var lpBuffer: TMemoryBasicInformation; dwLength: DWORD): DWORD; stdcall;
+var cr3: ptruint;
+begin
+  {$ifdef windows}
+  {$ifdef cpu64}
+  if forceCR3VirtualQueryEx then
+  begin
+    if dbk32functions.GetCR3(hProcess, cr3) then
+      exit(VirtualQueryExCR3(cr3, lpAddress, lpBuffer, dwLength));
+  end;
+  {$endif}
+  {$endif}
+  result:=VirtualQueryExActual(hProcess,lpAddress, lpBuffer, dwLength);
+end;
 
 function VirtualQueryEx_StartCache_stub(hProcess: THandle; flags: dword): boolean;
 begin
@@ -1051,6 +1508,7 @@ function Is64BitProcess(processhandle: THandle): boolean;
 var iswow64: BOOL;
 begin
   {$ifdef darwin}
+  outputdebugstring('newkernelhandler.is64bitprocess');
   exit(macport.is64bit(processhandle));
   {$endif}
 {$ifdef windows}
@@ -1100,11 +1558,14 @@ begin
 
 end;
 
+{$endif}
+
 function loaddbvmifneeded(reason: string=''): BOOL;  stdcall;
 var
   signed: BOOL;
   r: string;
 begin
+{$if defined(windows) and not defined(STANDALONECH)}
   result:=isRunningDBVM;
   if result then exit;
 
@@ -1129,6 +1590,10 @@ begin
           LaunchDBVM(-1);
           if not isRunningDBVM then raise exception.Create(rsDidNotLoadDBVM);
           result:=true;
+
+          if (MainThreadID=GetCurrentThreadId) then
+            MemoryBrowser.Kerneltools1.enabled:=true;
+
         end else
         begin
           //the driver isn't loaded
@@ -1143,20 +1608,33 @@ begin
 
   end;
 {$endif}
+{$else}
+  result:=false;
+{$endif}
 end;
 
 function isRunningDBVM: boolean;
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   result:=dbvm_version>0;
 {$else}
   result:=false;
 {$endif}
 end;
 
+
+
+
+
+{$ifdef CPUX86_64}
+{$define MAYUSEDBVM}
 {$endif}
 
-{$ifndef CPUX86_64 and ifndef CPUi386}
+{$ifdef CPUi386}
+{$define MAYUSEDBVM}
+{$endif}
+
+{$ifndef MAYUSEDBVM}
 function isIntel: boolean;
 begin
   result:=false;
@@ -1298,7 +1776,7 @@ const
   IA32_VMX_PROCBASED_CTLS2_MSR=$48b;
 var procbased1flags: DWORD;
 begin
-  {$ifdef windows}
+  {$if defined(windows) and not defined(STANDALONECH)}
   try
     result:=isDBVMCapable; //assume yes until proven otherwise
 
@@ -1346,7 +1824,7 @@ end;
 
 procedure LoadDBK32; stdcall;
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   if not DBKLoaded then
   begin
     outputdebugstring('LoadDBK32');
@@ -1444,23 +1922,24 @@ begin
       pluginhandler.handlechangedpointers(0);
     {$endif}
 
-    MemoryBrowser.Kerneltools1.Enabled:=DBKLoaded;
-
+    MemoryBrowser.Kerneltools1.Enabled:=DBKLoaded or isRunningDBVM;
+    MemoryBrowser.miCR3Switcher.visible:=MemoryBrowser.Kerneltools1.Enabled;
   end;
 {$endif}
 end;
 
+{$endif}
 
 procedure DBKFileAsMemory; overload;
 {Changes the redirection of ReadProcessMemory, WriteProcessMemory and VirtualQueryEx to FileHandler.pas's ReadProcessMemoryFile, WriteProcessMemoryFile and VirtualQueryExFile }
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   UseFileAsMemory:=true;
   usephysical:=false;
   Usephysicaldbvm:=false;
-  ReadProcessMemory:=@ReadProcessMemoryFile;
+  ReadProcessMemoryActual:=@ReadProcessMemoryFile;
   WriteProcessMemoryActual:=@WriteProcessMemoryFile;
-  VirtualQueryEx:=@VirtualQueryExFile;
+  VirtualQueryExActual:=@VirtualQueryExFile;
 
 
   {$ifdef cemain}
@@ -1472,7 +1951,7 @@ end;
 
 procedure DBKFileAsMemory(fn:string; baseaddress: ptruint=0); overload;
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   filehandler.filename:=filename;
   if filehandler.filedata<>nil then
     freeandnil(filehandler.filedata);
@@ -1484,10 +1963,12 @@ begin
 {$endif}
 end;
 
+{$ifdef windows}
+
 function VirtualQueryExPhysical(hProcess: THandle; lpAddress: Pointer; var lpBuffer: TMemoryBasicInformation; dwLength: DWORD): DWORD; stdcall;
 var buf:_MEMORYSTATUS;
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
 
   if dbk32functions.hdevice<>INVALID_HANDLE_VALUE then
   begin
@@ -1527,9 +2008,9 @@ begin
   UseFileAsMemory:=false;
   usephysical:=false;
   usephysicaldbvm:=true;
-  ReadProcessMemory:=@ReadProcessMemoryPhys;
+  ReadProcessMemoryActual:=@ReadProcessMemoryPhys;
   WriteProcessMemoryActual:=@WriteProcessMemoryPhys;
-  VirtualQueryEx:=@VirtualQueryExPhys;
+  VirtualQueryExActual:=@VirtualQueryExPhys;
 
 
   if pluginhandler<>nil then
@@ -1540,7 +2021,7 @@ end;
 
 procedure DBKPhysicalMemory;
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   LoadDBK32;
   If DBKLoaded=false then exit;
 
@@ -1552,9 +2033,9 @@ begin
       freeandnil(filedata);
   end;
   usefileasmemory:=false;
-  ReadProcessMemory:=@ReadPhysicalMemory;
+  ReadProcessMemoryActual:=@ReadPhysicalMemory;
   WriteProcessMemoryActual:=@WritePhysicalMemory;
-  VirtualQueryEx:=@VirtualQueryExPhysical;
+  VirtualQueryExActual:=@VirtualQueryExPhysical;
 
 
   {$ifdef cemain}
@@ -1566,7 +2047,7 @@ end;
 
 procedure DBKProcessMemory;
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   usephysical:=false;
   Usephysicaldbvm:=false;
 
@@ -1594,8 +2075,8 @@ end;
 procedure DontUseDBKQueryMemoryRegion;
 {Changes the redirection of VirtualQueryEx back to the windows API virtualQueryEx}
 begin
-{$ifdef windows}
-  VirtualQueryEx:=GetProcAddress(WindowsKernel,'VirtualQueryEx');
+{$if defined(windows) and not defined(STANDALONECH)}
+  VirtualQueryExActual:=GetProcAddress(WindowsKernel,'VirtualQueryEx');
   usedbkquery:=false;
   if usephysicaldbvm then DbkPhysicalMemoryDBVM;
   if usephysical then DbkPhysicalMemory;
@@ -1611,11 +2092,11 @@ end;
 procedure UseDBKQueryMemoryRegion;
 {Changes the redirection of VirtualQueryEx to the DBK32 equivalent}
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   LoadDBK32;
   If DBKLoaded=false then exit;
   UseDBKOpenProcess;
-  VirtualQueryEx:=@VQE;
+  VirtualQueryExActual:=@VQE;
   usedbkquery:=true;
 
   if usephysical then DbkPhysicalMemory;
@@ -1633,9 +2114,9 @@ end;
 procedure DontUseDBKReadWriteMemory;
 {Changes the redirection of ReadProcessMemory and WriteProcessMemory back to the windows API ReadProcessMemory and WriteProcessMemory }
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   DBKReadWrite:=false;
-  ReadProcessMemory:=GetProcAddress(WindowsKernel,'ReadProcessMemory');
+  ReadProcessMemoryActual:=GetProcAddress(WindowsKernel,'ReadProcessMemory');
   WriteProcessMemoryActual:=GetProcAddress(WindowsKernel,'WriteProcessMemory');
   VirtualAllocEx:=GetProcAddress(WindowsKernel,'VirtualAllocEx');
   if usephysical then DbkPhysicalMemory;
@@ -1657,11 +2138,11 @@ var
   old: pointer;
   olds: string;
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   LoadDBK32;
   If DBKLoaded=false then exit;
   UseDBKOpenProcess;
-  ReadProcessMemory:=@RPM;
+  ReadProcessMemoryActual:=@RPM;
   WriteProcessMemoryActual:=@WPM;
   VirtualAllocEx:=@VAE;
   DBKReadWrite:=true;
@@ -1699,7 +2180,7 @@ end;
 procedure DontUseDBKOpenProcess;
 {Changes the redirection of OpenProcess and VirtualAllocEx  back to the windows API OpenProcess and VirtualAllocEx }
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   OpenProcess:=GetProcAddress(WindowsKernel,'OpenProcess');
   OpenThread:=GetProcAddress(WindowsKernel,'OpenThread');
 
@@ -1715,7 +2196,7 @@ var
   zwc: pointer;
   func: pointer;
 begin
-{$ifdef windows}
+{$if defined(windows) and not defined(STANDALONECH)}
   LoadDBK32;
   If DBKLoaded=false then exit;
   OpenProcess:=@OP; //gives back the real handle, or if it fails it gives back a value only valid for the dll
@@ -1774,6 +2255,8 @@ begin
 end;
 
 {$endif}
+
+{$ifndef STANDALONECH}
 procedure initMaxPhysMask;
 var cpuidr: TCPUIDResult;
 iswow: BOOL;
@@ -1784,6 +2267,15 @@ begin
   MAXPHYADDRMASK:=MAXPHYADDRMASK shr MAXPHYADDR;
   MAXPHYADDRMASK:=not (MAXPHYADDRMASK shl MAXPHYADDR);
   MAXPHYADDRMASKPB:=MAXPHYADDRMASK and qword($fffffffffffff000);
+
+  MAXLINEARADDR:=(cpuidr.eax shr 8) and $ff;
+  MAXLINEARADDRMASK:=qword($ffffffffffffffff);
+  MAXLINEARADDRMASK:=MAXLINEARADDRMASK shr MAXLINEARADDR;
+  MAXLINEARADDRMASK:=MAXLINEARADDRMASK shl MAXLINEARADDR;
+
+  MAXLINEARADDRTEST:=qword(1) shl (MAXLINEARADDR-1);
+  outputdebugstring(format('cpuid $80000008=%x, %x, %x, %x',[cpuidr.eax, cpuidr.ebx, cpuidr.ecx, cpuidr.edx]));
+
 
   {$ifdef cpu64}
   MAXPHYADDRMASKPBBIG:=MAXPHYADDRMASK and qword($ffffffffffe00000);
@@ -1801,6 +2293,7 @@ begin
 
   {$endif}
 end;
+{$endif}
 
 {$ifdef windows}
 procedure getLBROffset;
@@ -1857,7 +2350,7 @@ resourcestring
 
 initialization
 
-  {$ifdef windows}
+  {$if defined(windows) and not defined(STANDALONECH)}
   DBKLoaded:=false;
 
   usephysical:=false;
@@ -1884,12 +2377,16 @@ initialization
 
 
   //by default point to these exports:
-  ReadProcessMemory:=GetProcAddress(WindowsKernel,'ReadProcessMemory');
+  ReadProcessMemoryActual:=GetProcAddress(WindowsKernel,'ReadProcessMemory');
   WriteProcessMemoryActual:=GetProcAddress(WindowsKernel,'WriteProcessMemory');
+
+  defaultRPM:=@ReadProcessMemoryActual;
+  defaultWPM:=@WriteProcessMemoryActual;
+
 
   OpenProcess:=GetProcAddress(WindowsKernel,'OpenProcess');
 
-  VirtualQueryEx:=GetProcAddress(WindowsKernel,'VirtualQueryEx');
+  VirtualQueryExActual:=GetProcAddress(WindowsKernel,'VirtualQueryEx');
   VirtualAllocEx:=GetProcAddress(WindowsKernel,'VirtualAllocEx');
   VirtualFreeEx:=GetProcAddress(WindowsKernel,'VirtualFreeEx');
 
@@ -1968,14 +2465,37 @@ initialization
 
   getLBROffset;
   {$endif}
+
+  {$ifndef STANDALONECH}
   initMaxPhysMask;
+  {$endif}
 
   {$ifdef darwin}
-  ReadProcessMemory:=@macport.ReadProcessMemory;
+  ReadProcessMemoryActual:=@macport.ReadProcessMemory;
+  WriteProcessMemoryActual:=@macport.WriteProcessMemory;
   SetThreadContext:=@macport.SetThreadContext;
   GetThreadContext:=@macport.GetThreadContext;
-  VirtualQueryEx:=@macport.Virtualqueryex;
+  VirtualQueryExActual:=@macport.Virtualqueryex;
   OpenProcess:=@macport.OpenProcess;
+  {$else}
+{
+  OutputDebugString('TARM64CONTEXT:');
+  OutputDebugString(format('regs at %p',[@PARM64CONTEXT(0).regs]));
+  OutputDebugString(format('SP at %p',[@PARM64CONTEXT(0).SP]));
+  OutputDebugString(format('PC at %p',[@PARM64CONTEXT(0).PC]));
+  OutputDebugString(format('PSTATE at %p',[@PARM64CONTEXT(0).PSTATE]));
+  OutputDebugString(format('fp at %p',[@PARM64CONTEXT(0).fp]));
+  OutputDebugString(format('vregs[0] at %p',[@PARM64CONTEXT(0).fp.vregs[0]]));
+  OutputDebugString(format('vregs[1] at %p',[@PARM64CONTEXT(0).fp.vregs[1]]));
+  OutputDebugString(format('vregs[2] at %p',[@PARM64CONTEXT(0).fp.vregs[2]]));
+  OutputDebugString(format('vregs[30] at %p',[@PARM64CONTEXT(0).fp.vregs[30]]));
+  OutputDebugString(format('vregs[31] at %p',[@PARM64CONTEXT(0).fp.vregs[31]]));
+  OutputDebugString(format('fpsr at %p',[@PARM64CONTEXT(0).fp.fpsr]));
+  OutputDebugString(format('fpcr at %p',[@PARM64CONTEXT(0).fp.fpcr]));
+  OutputDebugString(format('reserved[0] at %p',[@PARM64CONTEXT(0).fp.reserved[0]]));
+  OutputDebugString(format('reserved[1] at %p',[@PARM64CONTEXT(0).fp.reserved[1]]));
+
+  }
 
   {$endif}
 

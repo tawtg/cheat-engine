@@ -81,6 +81,9 @@ DWORD WINAPI DataCollectorEntry(LPVOID lpThreadParameter)
 
 
 	pw=new CPipeServer();
+    
+   
+    
 	pw->Start();
 
 	DataCollectorThread=0;
@@ -101,12 +104,15 @@ DWORD WINAPI DataCollectorEntry(LPVOID lpThreadParameter)
 #include <syslog.h>
 void MacPortEntryPoint(void *param)
 {
-    //called by a thread
-    openlog((char*)"Cheat Engine MDC", 0, LOG_USER);
-    setlogmask(LOG_UPTO(LOG_DEBUG));
-    syslog(LOG_NOTICE, (char*)"CELOGX:FUUUCK");
     
-    OutputDebugString((char*)"MonoDataCollector for Mac loaded");
+    pthread_setname_np("MonoDataCollector Thread");
+    //called by a thread
+    //openlog((char*)"Cheat Engine MDC", 0, LOG_USER);
+    //setlogmask(LOG_UPTO(LOG_DEBUG));
+    //syslog(LOG_NOTICE, (char*)"CELOGX:FUUUCK");
+    
+    //OutputDebugString((char*)"MonoDataCollector for Mac loaded");
+   
     DataCollectorEntry(param);
     
 }
