@@ -209,6 +209,8 @@ type
     physicaladdress: qword;
     DBVMStatusUpdater: TDBVMStatusUpdater;
 
+    currentTracefilename: string;
+
     procedure configuredisplay;
     procedure setSavestack(x: boolean);
     procedure updatestackview;
@@ -256,6 +258,7 @@ resourcestring
   rsWaitingForTraceToStart = 'Waiting for trace to start';
   rsDBVMBreakAndTraceNeedsDBVM = 'DBVM Break and Trace needs DBVM. Loading '
     +'DBVM can potentially cause a system freeze. Are you sure?';
+  rsTracer = 'Tracer';
 
 destructor TTraceDebugInfo.destroy;
 begin
@@ -724,7 +727,7 @@ begin
   setlength(x,0);
   loadedformpos:=loadformposition(self,x);
 
-  if length(x)>1 then
+  if length(x)>=1 then
     panel1.Width:=x[0];
 
 
@@ -1535,6 +1538,8 @@ begin
       miRealignCompare.enabled:=true;
       miRealignCompare.visible:=true;
 
+      caption:=rstracer+':'+currenttracefilename+' - '+extractfilename(opendialog1.filename);
+
       {
       //nope
       width:=width+lvTracer.width;
@@ -1590,11 +1595,22 @@ begin
       if version<>{$ifdef cpu64}1{$else}0{$endif} then
         raise exception.create('This trace was made with the '+{$ifdef cpu64}'32'{$else}'64'{$endif}+'-bit version of '+strCheatEngine+'. You need to use that version to see the register values and stacktrace');
 
+      dereference:=false;
       for i:=0 to lvTracer.Items.Count-1 do
+      begin
         lvTracer.Items[i].Data:=TTraceDebugInfo.createFromStream(f);
+        if not dereference and (TTraceDebugInfo(lvTracer.Items[i].Data).bytesize>0) then
+          dereference:=true;
+      end;
+
+
 
       miOpenTraceForCompare.Enabled:=true;
       miOpenTraceForCompare.Visible:=true;
+
+      currentTracefilename:=extractfilename(opendialog1.filename);
+
+      caption:=rsTracer+':'+currentTracefilename;
     finally
       f.free;
     end;
@@ -1795,6 +1811,10 @@ begin
       end;
 
       beep;
+
+      currenttracefilename:=extractfilename(savedialog1.filename);
+
+      caption:=rsTracer+':'+currenttracefilename;
     finally
       f.free;
       emptytracedebug.free;
@@ -1889,7 +1909,7 @@ begin
             script[1]:='local referencedBytes='+bytesToLuaByteTableString(TTraceDebugInfo(lvTracer.Items[i].data).bytes, TTraceDebugInfo(lvTracer.Items[i].data).bytesize);
 
           if usesInstruction then
-            script[2]:='local instruction=[['+TTraceDebugInfo(lvTracer.Items[i].data).instruction+']]';
+            script[2]:='local instruction=[['+TTraceDebugInfo(lvTracer.Items[i].data).instruction+' ]]';
 
           if CheckIfConditionIsMetContext(0, c, script.text) then
           begin

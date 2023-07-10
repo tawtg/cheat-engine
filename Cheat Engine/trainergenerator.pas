@@ -366,6 +366,7 @@ begin
   GetProcessList(comboProcesslist.Items, true);
 
   //find the current process in the processlist
+  {$IFDEF WINDOWS}
   for i:=0 to comboProcesslist.Items.Count-1 do
     if PProcessListInfo(comboProcesslist.Items.Objects[i]).processID=processid then
     begin
@@ -373,6 +374,7 @@ begin
       comboProcesslist.ItemIndex:=i;
       break;
     end;
+  {$ENDIF}
 
   //first check if there is already a trainerform
   reusedWindow:=false;
@@ -426,6 +428,7 @@ begin
   begin
     //create it
     trainerform:=TTrainerForm.CreateNew(nil);
+    trainerform.scaled:=false;
     trainerform.AutoSize:=false;
     trainerform.defaultTrainer:=true;
     trainerform.DesignTimePPI:=screen.PixelsPerInch;

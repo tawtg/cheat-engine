@@ -505,6 +505,15 @@ type
     destructor destroy; override;
   end;
 
+  TVQEValidCacheEntry=class
+  private
+    address: ptruint;
+    size: size_t;
+    valid: boolean;
+    function containsaddress(a: ptruint): boolean;
+  end;
+
+
   TScanController=class(tthread)
   {
     The ScanController will configure the scanners and wait till they are done, mainly a idle thread
@@ -520,6 +529,11 @@ type
     isStaticPointerLookupTree: TAvgLvlTree; //init once and reuse by all threads
     isDynamicPointerLookupTree: TAvgLvlTree; // same ^
     isExecutablePointerLookupTree: TAvgLvlTree; // same ^
+
+    vqevalidcache: TAvgLvlTree;
+    vqecache_lastregion: TVQEValidCacheEntry;
+
+    function isValidregion(address: ptruint): boolean;
     procedure FillPointerLookupTrees(pointertypes: TPointertypes);
     function isPointer(address: ptruint; pointertypes: TPointerTypes): boolean;
     procedure CleanupIsPointerLookupTree(var lookupTree: TAvgLvlTree);
@@ -601,6 +615,8 @@ type
     newluastate: boolean;
     isUnique: boolean;
 
+    workingsetonly: boolean;
+
     procedure execute; override;
     constructor create(suspended: boolean);
     destructor destroy; override;
@@ -657,6 +673,8 @@ type
     savedresults: tstringlist;
     fonlyOne: boolean;
     fIsUnique: boolean;
+
+    fworkingsetonly: boolean;
 
 
     ffloatscanWithoutExponents: boolean;
@@ -789,6 +807,9 @@ type
     property Fastscanmethod: TFastScanMethod read ffastscanmethod write ffastscanmethod;
     property Fastscanparameter: string read ffastscanparameter write ffastscanparameter;
     property Customtype: TCustomType read fcustomtype write fcustomtype;
+    property WorkingSetOnly: boolean read fworkingsetonly write fworkingsetonly;
+    property PresentOnly: boolean read fworkingsetonly write fworkingsetonly;
+
 
     //next scan specific:
     property Percentage: boolean read fPercentage write fPercentage;
@@ -3086,6 +3107,7 @@ begin
 end;
 
 function TScanner.DWordLuaFormula(newvalue,oldvalue: pointer): boolean;
+var t: integer;
 begin
   lua_pushvalue(L,-1);
 
@@ -4162,6 +4184,10 @@ begin
       lastpart:=311;
       while ptruint(p)<=lastmem do
       begin
+{$ifdef overflowdebug}
+        if (ptruint(p)=lastmem) then
+          OutputDebugString(format('scanner %d: p=%x lastmem=%x',[scannernr, ptruint(p),lastmem]));
+{$endif}
         if checkroutine(p,oldp) xor inv then //found one
           StoreResultRoutine(base+ptruint(p)-ptruint(buffer),p);
 
@@ -5648,8 +5674,8 @@ begin
   stopregion:=_stopregion;
 
   //allocate a buffer for reading the new memory buffer
-  memorybuffer:=virtualAlloc(nil,maxregionsize+(variablesize-1),MEM_COMMIT or MEM_RESERVE or MEM_TOP_DOWN, PAGE_READWRITE);
-  if memorybuffer=nil then raise exception.create('Failure allocating memory ('+inttostr(maxregionsize+(variablesize-1))+' bytes)');
+  memorybuffer:=virtualAlloc(nil,maxregionsize+variablesize,MEM_COMMIT or MEM_RESERVE or MEM_TOP_DOWN, PAGE_READWRITE);
+  if memorybuffer=nil then raise exception.create('Failure allocating memory ('+inttostr(maxregionsize+variablesize)+' bytes)');
 
   lastpart:=301;
   try
@@ -5922,65 +5948,70 @@ begin
   tthread.NameThreadForDebugging('Memscan TScanner thread '+inttostr(scannernr));
 
 
-  lastpart:=0;
-  SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
-
-
   try
-    scanwriter:=TScanfilewriter.create(self,self.OwningScanController,addressfile,memoryfile);
-    lastpart:=1;
+    lastpart:=0;
+    SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
 
-    if scantype=stFirstScan then firstscan;
-    if scantype=stNextScan then
-    begin
-      if useNextNextScan then
-        nextnextscan
-      else
-        firstnextscan;
+
+    try
+      scanwriter:=TScanfilewriter.create(self,self.OwningScanController,addressfile,memoryfile);
+      lastpart:=1;
+
+      if scantype=stFirstScan then firstscan;
+      if scantype=stNextScan then
+      begin
+        if useNextNextScan then
+          nextnextscan
+        else
+          firstnextscan;
+      end;
+
+      //tell scanwriter to stop
+
+      if savedscanhandler<>nil then freeandnil(savedscanhandler);
+
+      lastpart:=2;
+      scanwriter.flush;
+      lastpart:=3;
+
+      if scanwriter.writeError then
+        raise exception.Create(Format(rsDiskWriteError, [scanwriter.errorString]));
+
+      if OnlyOne and (AddressFound<>0) then
+      begin
+        //tell siblings to go kill themselves. This one won the price
+        for i:=0 to length(OwningScanController.scanners)-1 do
+          OwningScanController.scanners[i].Terminate;
+      end;
+
+    except
+      on e: exception do
+      begin
+        haserror:=true;
+        errorstring:=rsThread+inttostr(scannernr)+':'+e.message+' ('+inttostr(lastpart)+')';
+
+        log('Scanner exception:'+errorstring);
+
+
+        {$if lcl_fullversion < 2000000}
+        DebugLn('Scanner exception:'+errorstring);
+        DumpExceptionBackTrace;
+        {$endif}
+
+        //tell all siblings to terminate, something messed up
+        //and I can just do this, since the ScanController is waiting for us, and terminate is pretty much atomic
+        //for i:=0 to length(OwningScanController.scanners)-1 do
+
+        OwningScanController.Terminate;
+
+      end;
     end;
 
-    //tell scanwriter to stop
 
-    if savedscanhandler<>nil then freeandnil(savedscanhandler);
-
-    lastpart:=2;
-    scanwriter.flush;
-    lastpart:=3;
-
-    if scanwriter.writeError then
-      raise exception.Create(Format(rsDiskWriteError, [scanwriter.errorString]));
-
-    if OnlyOne and (AddressFound<>0) then
-    begin
-      //tell siblings to go kill themselves. This one won the price
-      for i:=0 to length(OwningScanController.scanners)-1 do
-        OwningScanController.scanners[i].Terminate;
-    end;
-
-  except
-    on e: exception do
-    begin
-      haserror:=true;
-      errorstring:=rsThread+inttostr(scannernr)+':'+e.message+' ('+inttostr(lastpart)+')';
-
-      log('Scanner exception:'+errorstring);
-
-
-      {$if lcl_fullversion < 2000000}
-      DebugLn('Scanner exception:'+errorstring);
-      DumpExceptionBackTrace;
-      {$endif}
-
-      //tell all siblings to terminate, something messed up
-      //and I can just do this, since the ScanController is waiting for us, and terminate is pretty much atomic
-      //for i:=0 to length(OwningScanController.scanners)-1 do
-
-      OwningScanController.Terminate;
-
-    end;
+  finally
+    isdone:=true;
   end;
 
-  isdone:=true;
 end;
 
 destructor TScanner.destroy;
@@ -6541,7 +6572,7 @@ begin
       //and now we wait
       for i:=0 to threadcount-1 do
       begin
-        while not (terminated or scanners[i].isdone) do
+        while not (terminated or scanners[i].isdone or scanners[i].Finished) do
         begin
           scanners[i].WaitTillDone(25);
           if (OwningMemScan.progressbar<>nil) or (assigned(owningmemscan.OnGuiUpdate)) then
@@ -6773,7 +6804,7 @@ begin
   //and now we wait
   for i:=0 to threadcount-1 do
   begin
-    while not (terminated or scanners[i].isdone) do
+    while not (terminated or scanners[i].isdone or scanners[i].Finished) do
     begin
       scanners[i].WaitTillDone(25);
       if (OwningMemScan.progressbar<>nil) or (assigned(owningmemscan.OnGuiUpdate))  then
@@ -6833,6 +6864,114 @@ begin
     NextNextScan;
 end;
 
+
+
+
+function vqevalidcachecompare(Item1, Item2: Pointer): Integer;
+begin
+  if InRangeX(TVQEValidCacheEntry(Item1).address, TVQEValidCacheEntry(Item2).address, TVQEValidCacheEntry(Item2).address+TVQEValidCacheEntry(Item2).size-1) then
+    exit(0)
+  else
+    result:=CompareValue(TVQEValidCacheEntry(Item1).address, TVQEValidCacheEntry(Item2).address);
+end;
+
+
+function TVQEValidCacheEntry.containsaddress(a: ptruint): boolean;
+begin
+  result:=(a>=address) and (a<address+size);
+end;
+
+function TScanController.isValidregion(address: ptruint): boolean;
+var
+  mbi : TMemoryBasicInformation;
+  isWritable, isExecutable, isCopyOnWrite: boolean;
+
+  e: TVQEValidCacheEntry;
+  n: TAVLTreeNode;
+begin
+  result:=false;
+
+  if address<startaddress then exit(false);
+  if address>stopaddress then exit(false);
+
+  if (vqecache_lastregion<>nil) and (vqecache_lastregion.containsaddress(address)) then
+    exit(vqecache_lastregion.valid);
+
+  e:=TVQEValidCacheEntry.Create;
+  e.address:=address;
+  n:=vqevalidcache.Find(e);
+
+  e.free;
+
+  if n<>nil then
+  begin
+    vqecache_lastregion:=TVQEValidCacheEntry(n.Data);
+    exit(TVQEValidCacheEntry(n.Data).valid);
+  end;
+
+  if VirtualQueryEx(processhandle, pointer(address), mbi, sizeof(mbi))<>0 then
+  begin
+    e:=TVQEValidCacheEntry.Create;
+    e.address:=ptruint(mbi.BaseAddress);
+    e.size:=mbi.RegionSize;
+    e.valid:=false;
+
+
+    result:=(mbi.State=mem_commit);
+    if not result then
+    begin
+      vqevalidcache.Add(e);
+      exit;
+    end;
+
+    result:=result and (PtrUint(mbi.BaseAddress)<stopaddress);
+    result:=result and ((mbi.Protect and page_guard)=0);
+    result:=result and ((mbi.protect and page_noaccess)=0);
+    result:=result and (not (not scan_mem_private and (mbi._type=mem_private)));
+    result:=result and (not (not scan_mem_image and (mbi._type=mem_image)));
+    result:=result and (not (not scan_mem_mapped and (mbi._type=mem_mapped)));
+    result:=result and (not (Skip_PAGE_NOCACHE and ((mbi._type and PAGE_NOCACHE)>0)));
+    result:=result and (not (Skip_PAGE_WRITECOMBINE and ((mbi._type and PAGE_WRITECOMBINE)>0)));
+
+    if result then
+    begin
+      //initial check passed, check the other protection flags to see if it should be scanned
+
+      //fill in isWritable, isExecutable, isCopyOnWrite: boolean;
+      isWritable:=((mbi.protect and PAGE_READWRITE)>0) or
+                  ((mbi.protect and PAGE_WRITECOPY)>0) or //writecopy IS writable
+                  ((mbi.protect and PAGE_EXECUTE_READWRITE)>0) or
+                  ((mbi.protect and PAGE_EXECUTE_WRITECOPY)>0);
+
+      isExecutable:=((mbi.protect and PAGE_EXECUTE)>0) or
+                    ((mbi.protect and PAGE_EXECUTE_READ)>0) or
+                    ((mbi.protect and PAGE_EXECUTE_READWRITE)>0) or
+                    ((mbi.protect and PAGE_EXECUTE_WRITECOPY)>0);
+
+      isCopyOnWrite:=((mbi.protect and PAGE_WRITECOPY)>0) or
+                     ((mbi.protect and PAGE_EXECUTE_WRITECOPY)>0);
+
+      case scanWritable of
+        scanInclude: result:=result and isWritable;
+        scanExclude: result:=result and (not isWritable);
+      end;
+
+      case scanExecutable of
+        scanInclude: result:=result and isExecutable;
+        scanExclude: result:=result and (not isExecutable);
+      end;
+
+      case scanCopyOnWrite of
+        scanInclude: result:=result and isCopyOnWrite;
+        scanExclude: result:=result and (not isCopyOnWrite);
+      end;
+    end;
+
+    e.valid:=result;
+    vqevalidcache.Add(e);
+  end;
+end;
+
 procedure TScanController.firstScan;
 {
 first scan will gather the memory regions, open the files, and spawn scanners
@@ -6860,9 +6999,21 @@ var
   vqecacheflag: dword;
 
   starta,startb, stopa,stopb: ptruint;
+
+  wsisize: dword;
+  wsi: PPSAPI_WORKING_SET_INFORMATION;
+
+  getmemtimestart: qword;
+  getmemtimestop: qword;
+
+  parseregiontimestart: qword;
+  parseregiontimestop: qword;
 begin
  // OutputDebugString('TScanController.firstScan');
-  if OnlyOne or (luaformula and (newluastate=false)) then
+
+
+
+  if (OnlyOne and (not isUnique)) or (luaformula and (newluastate=false)) then
     threadcount:=1
   else
     threadcount:=GetCPUCount;
@@ -6900,7 +7051,7 @@ begin
   memRegionPos:=0;
 
 
-  if OnlyOne then //don't align at all. Some users want a byte perfect range...
+  if OnlyOne or isUnique then //don't align at all. Some users want a byte perfect range...
   begin
     //if (startaddress mod 8)>0 then //align on a 8 byte base
     // startaddress:=startaddress-(startaddress mod 8)+8;
@@ -6923,7 +7074,7 @@ begin
  // OutputDebugString('scanExecutable='+inttostr(integer(scanExecutable)));
  // OutputDebugString('scanCopyOnWrite='+inttostr(integer(scanCopyOnWrite)));
 
-
+  {$ifndef darwin}
   vqecacheflag:=0;
 
   if not Scan_MEM_MAPPED then
@@ -6935,10 +7086,80 @@ begin
   if scan_dirtyonly and (scanWritable=scanInclude) then
     vqecacheflag:=vqecacheflag or VQE_DIRTYONLY;  //2
 
-  {$ifndef darwin}
+
   VirtualQueryEx_StartCache(processhandle, vqecacheflag);
   {$endif}
 
+  {$ifdef windows}
+  if workingsetonly and assigned(QueryWorkingSet) then
+  begin
+    getmemtimestart:=GetTickCount64;
+    vqevalidcache:=TAvgLvlTree.Create(@vqevalidcachecompare);
+
+    wsisize:=sizeof(PSAPI_WORKING_SET_INFORMATION);
+    getmem(wsi, sizeof(PSAPI_WORKING_SET_INFORMATION));
+    while (QueryWorkingSet(processhandle, wsi, wsisize)=false) do
+    begin
+      if GetLastError<>ERROR_BAD_LENGTH then
+        raise exception.create('Failure querying present memory: unexpected error');
+
+      wsisize:=(wsi^.NumberOfEntries+(wsi^.NumberOfEntries shr 1))*sizeof(ptruint);  //add a little bit extra
+      freemem(wsi);
+      if wsisize=0 then raise exception.create('Failure querying present memory: invalid size');
+      getmem(wsi, wsisize);
+    end;
+
+    getmemtimestop:=GetTickCount64;
+
+    parseregiontimestart:=GetTickCount64;
+    validregion:=false;
+    for i:=0 to wsi^.NumberOfEntries-1 do
+    begin
+     // if (wsi^.WorkingSetInfo[i] and (1 shl 8)) <>0 then continue;
+
+      if (not validregion) or ((wsi^.WorkingSetInfo[i-1] and $fff)<>(wsi^.WorkingSetInfo[i] and $fff)) or ((wsi^.WorkingSetInfo[i-1] shr 12)+1<>(wsi^.WorkingSetInfo[i-1] shr 12)) then
+      begin
+        //new section or became valid ?
+
+        if isValidRegion(wsi^.WorkingSetInfo[i] and qword($fffffffffffff000)) then
+        begin
+          memRegion[memRegionPos].BaseAddress:=wsi^.WorkingSetInfo[i] and qword($fffffffffffff000);
+          memRegion[memRegionPos].MemorySize:=4096;
+          memRegion[memRegionPos].startaddress:=pointer(ptrUint(totalProcessMemorySize));
+
+          inc(totalProcessMemorySize, 4096);
+          inc(memRegionPos);
+          validregion:=true;
+
+
+          if (memRegionPos mod 16)=0 then //add another 16 to it
+            setlength(memRegion,length(memRegion)+16);
+        end
+        else
+          validregion:=false;
+      end
+      else
+      begin
+        if validregion then //append to the current section
+        begin
+          inc(memRegion[memRegionPos-1].MemorySize,4096);
+          inc(totalProcessMemorySize, 4096);
+        end;
+      end;
+
+
+    end;
+
+    parseregiontimestop:=GetTickCount64;
+
+    //cleanup vqe valid cache
+    vqevalidcache.FreeAndClear;
+    vqevalidcache.free;
+
+    vqecache_lastregion:=nil;
+  end
+  else
+  {$endif}
   while (Virtualqueryex(processhandle,pointer(currentBaseAddress),mbi,sizeof(mbi))<>0) and (currentBaseAddress<stopaddress) and ((currentBaseAddress+mbi.RegionSize)>currentBaseAddress) do   //last check is done to see if it wasn't a 64-bit overflow.
   begin
   //  OutputDebugString(format('R=%x-%x',[ptruint(mbi.BaseAddress), ptruint(mbi.BaseAddress)+mbi.RegionSize]));
@@ -7112,9 +7333,9 @@ begin
     if OwningMemScan.previousMemoryBuffer<>nil then virtualfree(OwningMemScan.previousMemoryBuffer,0,MEM_RELEASE);
 
     //OutputDebugString(format('Allocating %dKB for previousMemoryBuffer',[totalProcessMemorySize div 1024]));
-    OwningMemScan.previousMemoryBuffer:=VirtualAlloc(nil,totalProcessMemorySize, MEM_COMMIT or MEM_RESERVE or MEM_TOP_DOWN, PAGE_READWRITE); //top down to try to prevent memory fragmentation
+    OwningMemScan.previousMemoryBuffer:=VirtualAlloc(nil,totalProcessMemorySize+8192, MEM_COMMIT or MEM_RESERVE or MEM_TOP_DOWN, PAGE_READWRITE); //top down to try to prevent memory fragmentation
     if OwningMemScan.previousMemoryBuffer=nil then
-      raise exception.Create(Format(rsFailureAllocatingMemoryForCopyTriedAllocatingKB, [inttostr(totalProcessMemorySize div 1024)]));
+      raise exception.Create(Format(rsFailureAllocatingMemoryForCopyTriedAllocatingKB, [inttostr(8+totalProcessMemorySize div 1024)]));
 
   //  OutputDebugString(format('Allocated at %p',[OwningMemScan.previousMemoryBuffer]));
     {$endif}
@@ -7291,7 +7512,7 @@ begin
     //and now we wait
     for i:=0 to threadcount-1 do
     begin
-      while not (terminated or scanners[i].isdone) do
+      while not (terminated or scanners[i].isdone or scanners[i].Finished) do
       begin
         scanners[i].WaitTillDone(25);
         if (OwningMemScan.progressbar<>nil) or (assigned(owningmemscan.OnGuiUpdate)) then
@@ -7884,6 +8105,8 @@ end;
 function TMemscan.deleteSavedResult(resultname: string): boolean;
 var i: integer;
 begin
+  if resultname='' then exit(false);
+
   if (resultname='TMP') or (resultname='UNDO') then
     raise exception.create(rsTMPAndUNDOAreNamesThatMayNotBeUsedTryAnotherName);
 
@@ -8435,6 +8658,7 @@ begin
   scancontroller.newluastate:=fNewLuaState;
   scancontroller.isUnique:=fIsUnique;
   scanController.OnlyOne:=fOnlyOne;
+  scancontroller.workingsetonly:=fworkingsetonly;
 
   fLastscantype:=stFirstScan;
   fLastScanValue:=scanValue1;

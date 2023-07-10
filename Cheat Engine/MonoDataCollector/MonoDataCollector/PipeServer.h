@@ -6,7 +6,13 @@
 #endif
 
 
-#define MONO_DATACOLLECTORVERSION 22082022 
+                                //yyyymmdd
+#define MONO_DATACOLLECTORVERSION 20230409 
+
+#define MONO_TYPE_NAME_FORMAT_IL  0
+#define MONO_TYPE_NAME_FORMAT_REFLECTION  1
+#define MONO_TYPE_NAME_FORMAT_FULL_NAME  2
+#define MONO_TYPE_NAME_FORMAT_ASSEMBLY_QUALIFIED  3
 
 #define MONOCMD_INITMONO 0
 #define MONOCMD_OBJECT_GETCLASS 1
@@ -57,9 +63,21 @@
 #define MONOCMD_GETCLASSNESTINGTYPE 45
 #define MONOCMD_LIMITEDCONNECTION 46
 #define MONOCMD_GETMONODATACOLLECTORVERSION 47
+#define MONOCMD_NEWSTRING 48
+#define MONOCMD_ENUMIMAGES 49
+#define MONOCMD_ENUMCLASSESINIMAGEEX 50
+#define MONOCMD_ISCLASSENUM 51
+#define MONOCMD_ISCLASSVALUETYPE 52
+#define MONOCMD_ISCLASSISSUBCLASSOF 53
+#define MONOCMD_ARRAYELEMENTSIZE 54
+#define MONOCMD_GETCLASSTYPE 55
+#define MONOCMD_GETCLASSOFTYPE 56
+#define MONOCMD_GETTYPEOFMONOTYPE 57
+#define MONOCMD_GETREFLECTIONTYPEOFCLASSTYPE 58					 
 
 
 typedef struct {} MonoType;
+typedef struct {} MonoObject;
 typedef struct {} MonoMethodSignature;
 typedef void * gpointer;
 
@@ -111,8 +129,9 @@ typedef int (__cdecl *MONO_CLASS_INSTANCE_SIZE)(void *klass);
 typedef void* (__cdecl *MONO_CLASS_FROM_MONO_TYPE)(void *type);
 typedef void* (__cdecl *MONO_CLASS_GET_ELEMENT_CLASS)(void *klass);
 typedef int (__cdecl *MONO_CLASS_IS_GENERIC)(void *klass);
-
-
+typedef bool (__cdecl *MONO_CLASS_IS_ENUM)(void *klass);
+typedef bool (__cdecl *MONO_CLASS_IS_VALUETYPE)(void *klass);
+typedef bool (__cdecl *MONO_CLASS_IS_SUBCLASS_OF)(void *klass, void* parentKlass, bool check_interface);
 
 typedef int (__cdecl *MONO_CLASS_NUM_FIELDS)(void *klass);
 typedef int (__cdecl *MONO_CLASS_NUM_METHODS)(void *klass);
@@ -123,11 +142,20 @@ typedef void* (__cdecl *MONO_FIELD_GET_PARENT)(void *field);
 typedef int (__cdecl *MONO_FIELD_GET_OFFSET)(void *field);
 
 typedef char* (__cdecl *MONO_TYPE_GET_NAME)(void *type);
+typedef void* (__cdecl* MONO_TYPE_GET_CLASS)(void* type);
 typedef int (__cdecl *MONO_TYPE_GET_TYPE)(void *type);
+typedef void* (__cdecl *MONO_TYPE_GET_OBJECT)(void *domain, void *type);
+typedef void* (__cdecl *IL2CPP_TYPE_GET_OBJECT)(void *type);
+
+
 typedef char* (__cdecl *MONO_TYPE_GET_NAME_FULL)(void *type, int format);
+typedef bool(__cdecl* MONO_TYPE_IS_STRUCT)(void* type);
+
 typedef int (__cdecl *MONO_FIELD_GET_FLAGS)(void *type);
+typedef void* (__cdecl * MONO_FIELD_GET_VALUE_OBJECT)(void *domain, void* field, void* object);
 
-
+typedef int (__cdecl *MONO_FIELD_GET_FLAGS)(void *type);
+typedef void* (__cdecl * MONO_FIELD_GET_VALUE_OBJECT)(void *domain, void* field, void* object);
 
 
 typedef char* (__cdecl *MONO_METHOD_GET_NAME)(void *method);
@@ -143,7 +171,7 @@ typedef int (__cdecl *MONO_JIT_INFO_GET_CODE_SIZE)(void *jitinfo);
 typedef int (__cdecl *MONO_JIT_EXEC)(void *domain, void *assembly, int argc, char *argv[]);
 	
 
-
+typedef uint32_t (__cdecl *MONO_METHOD_GET_FLAGS)(void *method, uint32_t *iflags);
 typedef void* (__cdecl *MONO_METHOD_GET_HEADER)(void *method);
 typedef void* (__cdecl *MONO_METHOD_GET_CLASS)(void *method);
 typedef void* (__cdecl *MONO_METHOD_SIG)(void *method);
@@ -173,6 +201,7 @@ typedef void* (__cdecl *MONO_IMAGE_LOADED)(void *aname);
 typedef void* (__cdecl *MONO_STRING_NEW)(void *domain, const char *text);
 typedef char* (__cdecl *MONO_STRING_TO_UTF8)(void*);
 typedef void* (__cdecl *MONO_ARRAY_NEW)(void *domain, void *eclass, uintptr_t n);
+typedef int (__cdecl *MONO_ARRAY_ELEMENT_SIZE)(void * klass);
 typedef void* (__cdecl *MONO_OBJECT_TO_STRING)(void *object, void **exc);
 typedef void* (__cdecl *MONO_OBJECT_NEW)(void *domain, void *klass);
 
@@ -180,7 +209,7 @@ typedef void* (__cdecl *MONO_OBJECT_NEW)(void *domain, void *klass);
 typedef void  (__cdecl *MONO_FREE)(void*);
 
 typedef void* (__cdecl *MONO_METHOD_DESC_SEARCH_IN_IMAGE)(void *desc, void *image);
-typedef void* (__cdecl *MONO_RUNTIME_INVOKE)(void *method, void *obj, void **params, void **exc);
+typedef void* (__cdecl *MONO_RUNTIME_INVOKE)(void *method, void *obj, void **params, MonoObject **exc);
 typedef void* (__cdecl *MONO_RUNTIME_INVOKE_ARRAY)(void *method, void *obj, void *params, void **exc);
 typedef void* (__cdecl *MONO_RUNTIME_OBJECT_INIT)(void *object);
 
@@ -192,6 +221,8 @@ typedef void* (__cdecl *IL2CPP_FIELD_STATIC_SET_VALUE)(void* field, void* input)
 
 typedef void* (__cdecl *MONO_VALUE_BOX)(void *domain, void *klass, void* val);
 typedef void* (__cdecl *MONO_OBJECT_UNBOX)(void *obj);
+typedef void* (__cdecl *MONO_OBJECT_ISINST)(void *obj, void* kls);
+typedef void* (__cdecl *MONO_GET_ENUM_CLASS)(void);
 typedef void* (__cdecl *MONO_CLASS_GET_TYPE)(void *klass);
 typedef void* (__cdecl *MONO_CLASS_GET_NESTING_TYPE)(void *klass);
 
@@ -243,7 +274,9 @@ private:
 	MONO_CLASS_INSTANCE_SIZE mono_class_instance_size;
 	MONO_CLASS_FROM_MONO_TYPE mono_class_from_mono_type;
 	MONO_CLASS_IS_GENERIC mono_class_is_generic;
-
+	MONO_CLASS_IS_ENUM mono_class_is_enum;
+	MONO_CLASS_IS_VALUETYPE mono_class_is_valuetype;
+	MONO_CLASS_IS_SUBCLASS_OF mono_class_is_subclass_of;
 	MONO_DOMAIN_FOREACH mono_domain_foreach;
 	MONO_DOMAIN_SET mono_domain_set;
 	MONO_DOMAIN_GET mono_domain_get;
@@ -286,9 +319,15 @@ private:
 
 	MONO_TYPE_GET_NAME mono_type_get_name;
 	MONO_TYPE_GET_TYPE mono_type_get_type;
+	MONO_TYPE_GET_OBJECT mono_type_get_object; //return a ReflectionType* object
+	IL2CPP_TYPE_GET_OBJECT il2cpp_type_get_object;
+	MONO_TYPE_IS_STRUCT mono_type_is_struct;
+	MONO_TYPE_GET_CLASS mono_type_get_class;													  
 	MONO_TYPE_GET_NAME_FULL mono_type_get_name_full;
 	MONO_FIELD_GET_FLAGS mono_field_get_flags;
+	MONO_FIELD_GET_VALUE_OBJECT mono_field_get_value_object;
 
+	MONO_METHOD_GET_FLAGS mono_method_get_flags;
 	MONO_METHOD_GET_NAME mono_method_get_name;
 	MONO_METHOD_GET_HEADER mono_method_get_header;
 	MONO_METHOD_GET_CLASS mono_method_get_class;
@@ -324,11 +363,15 @@ private:
 	MONO_STRING_NEW mono_string_new;
 	MONO_STRING_TO_UTF8 mono_string_to_utf8;
 	MONO_ARRAY_NEW mono_array_new;
+	MONO_ARRAY_ELEMENT_SIZE mono_array_element_size;
 	MONO_OBJECT_TO_STRING mono_object_to_string;
 	MONO_OBJECT_NEW mono_object_new;
 	MONO_FREE mono_free;
 	MONO_VALUE_BOX mono_value_box;
 	MONO_OBJECT_UNBOX mono_object_unbox;
+	MONO_OBJECT_ISINST mono_object_isinst;
+	MONO_GET_ENUM_CLASS mono_get_enum_class;
+
 	MONO_CLASS_GET_TYPE mono_class_get_type;
 	MONO_CLASS_GET_NESTING_TYPE mono_class_get_nesting_type;
 
@@ -368,7 +411,7 @@ private:
 	BOOL il2cpp;
 
 	BOOL UWPMode;
-	
+	void* domain;
 
 	void CreatePipeandWaitForconnect(void);
 
@@ -382,7 +425,9 @@ private:
 	void GetImageFromAssembly();
 	void GetImageName();
 	void GetImageFileName();
+	void EnumImages();
 	void EnumClassesInImage();
+	void EnumClassesInImageEx();
 	void EnumFieldsInClass();
 	void EnumMethodsInClass();
 	void CompileMethod();
@@ -404,6 +449,10 @@ private:
 	void GetParentClass();
 	void GetClassNestingType();
 	void GetClassImage();
+	void GetClassType();
+	void GetClassOfType();
+	void GetTypeOfMonoType();
+	void GetReflectionTypeOfClassType();
 	void GetVTableFromClass();
 	void GetStaticFieldAddressFromClass();
 	void GetTypeClass();
@@ -412,14 +461,20 @@ private:
 	void InvokeMethod();
 	void LoadAssemblyFromFile();
 	void GetFullTypeName();
+	std::string GetFullTypeNameStr(void* klass, char isKlass, int nameformat);
 	void Object_New();
 	void Object_Init();
 	void IsGenericClass();
+	void IsEnumClass();
+	void IsValueTypeClass();
+	void IsSubClassOf();
+	void GetArrayElementSize();
 	void IsIL2CPP();
-    void FillOptionalFunctionList(); //mainly for unixbased systems
+	void FillOptionalFunctionList(); //mainly for unixbased systems
 	void GetStaticFieldValue();
 	void SetStaticFieldValue();
 	void GetMonoDataCollectorVersion();
+	void NewString();
 
 public:
 	CPipeServer(void);
@@ -432,13 +487,13 @@ public:
 	void WriteString1(const char*);
 	void FreeString(char*);
 
-	void *ReadObjectArray(void* domain);
-	void FreeObjectArray(void *arr);
-	int GetObjectArraySize(void *arr);
-	void **GetObjectArrayArgs(void *arr);
+	//void *ReadObjectArray(void* domain);
+	//void FreeObjectArray(void *arr);
+	//int GetObjectArraySize(void *arr);
+	//void **GetObjectArrayArgs(void *arr);
 
-	int GetObjectSize(int);
-	void* ReadObject(void* domain, MonoTypeEnum type, void* addr);
-	void WriteObject(void*);
-	void WriteEmptyObject();
+	//int GetObjectSize(int);
+	//void* ReadObject(void* domain, MonoTypeEnum type, void* addr);
+	//void WriteObject(void*);
+	//void WriteEmptyObject();
 };

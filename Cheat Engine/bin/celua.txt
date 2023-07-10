@@ -11,7 +11,7 @@ Global Functions:
 getCEVersion(): Returns a floating point value specifying the version of cheat engine
 getCheatEngineFileVersion(): Returns the full version data of the cheat engine version. A raw integer, and a table containing major, minor, release and build
 
-getOperatingSystem(): Returns 0 for Windows, 1 for Mac
+getOperatingSystem(): Returns 0 if CE is running in Windows, 1 for Mac
 
 darkMode(): Returns true if CE is running in windows Dark Mode. Has no effect on mac
 
@@ -105,14 +105,14 @@ extendedToByteTable(number): {}      - Converts an extended to a bytetable
 stringToByteTable(string): {}        - Converts a string to a bytetable
 wideStringToByteTable(string): {}    - Converts a string to a widestring and converts that to a bytetable
 
-byteTableToWord(table, OPTIONAL signed:boolean): number       - Converts a bytetable to a word
-byteTableToDword(table, OPTIONAL signed:boolean): number      - Converts a bytetable to a dword
-byteTableToQword(table): number      - Converts a bytetable to a qword
-byteTableToFloat(table): number      - Converts a bytetable to a float
-byteTableToDouble(table): number     - Converts a bytetable to a double
-byteTableToExtended(table): number   - Converts a bytetable to an extended and converts that to a double
-byteTableToString(table): string     - Converts a bytetable to a string
-byteTableToWideString(table): string - Converts a bytetable to a widestring and converts that to a string
+byteTableToWord(table, OPTIONAL signed:boolean, OPTIONAL tableindex=1): number       - Converts a bytetable to a word
+byteTableToDword(table, OPTIONAL signed:boolean, OPTIONAL tableindex=1): number      - Converts a bytetable to a dword
+byteTableToQword(table, OPTIONAL tableindex=1): number      - Converts a bytetable to a qword
+byteTableToFloat(table, OPTIONAL tableindex=1): number      - Converts a bytetable to a float
+byteTableToDouble(table, OPTIONAL tableindex=1): number     - Converts a bytetable to a double
+byteTableToExtended(table, OPTIONAL tableindex=1): number   - Converts a bytetable to an extended and converts that to a double
+byteTableToString(table, OPTIONAL tableindex=1): string     - Converts a bytetable to a string
+byteTableToWideString(table, OPTIONAL tableindex=1): string - Converts a bytetable to a widestring and converts that to a string
 
 bOr(int1, int2)   : Binary Or
 bXor(int1, int2)  : Binary Xor
@@ -145,8 +145,9 @@ loadPOFile(path): Loads a .PO file used for translation
 translate(string): Returns a translation of the string. Returns the same string if it can't be found
 translateID(translationid: string, originalstring: string OPTIONAL): Returns a translation of the string id
 
-ansiToUtf8(string): Converts a string in Ansi encoding to UTF8
-utf8ToAnsi(string): Converts a string in UTF8 encoding to Ansi
+convertToUTF8(string/bytetable, originalcodepagenumber): Conversts a given string/bytearray into a utf8 converted from the gtiven codepage number
+ansiToUTF8(string): Converts a string in Ansi encoding to UTF8
+UTF8ToAnsi(string): Converts a string in UTF8 encoding to Ansi
 Note: GUI components mainly show in UTF8, some other functions use Ansi, try to find out which ones...
 
 
@@ -377,6 +378,8 @@ MainForm.OnProcessOpened: function(processid, processhandle, caption) - Define t
 
 function onTableLoad(before): If defined this function will be called twice when a table gets loaded. Once before the loading, and once after.
 
+function onLuaError(errorstring): if defined this function will be called when a lua error happens. The string returned will be the error shown
+
 
 getOpenedProcessID() : Returns the currently opened process. If none is open, returns 0
 getOpenedProcessHandle(): Returns the handle of the currently opened process
@@ -410,6 +413,7 @@ getScreenWidth(): Returns the screen  width
 getWorkAreaHeight(): Returns the work area height
 getWorkAreaWidth(): Returns the work area width
 
+invertColor(color): Returns the inverted color
 getScreenCanvas(): Returns a Canvas object you can use to write to the screen (Note: Not as useful as you may think)
 
 getPixel(x,y) : returns the rgb value of the pixel at the specific screen coordinate
@@ -443,7 +447,7 @@ integerToUserData(int):  Converts a given integer to a userdata variable
 userDataToInteger(UserDataVar):  Converts a given userdata variable to an integer
 
 synchronize(function(...), ...): Calls the given function from the main thread. Returns the return value of the given function
-queue(function(...),...): calls the given function from the main thread. Does not wait for the result. Note: Be sure to synchronize and call checkSynchronize() before freeing the calling thread
+queue(function(...),...): calls the given function from the main thread. Does not wait for the result. Note: Be sure to synchronize and call checkSynchronize() before freeing the calling thread.  Note2: The queue will be emptied and NOT executed if the thread is freed. So it's not recommended without setting freeOnTerminate to false
 checkSynchronize(timeout OPTIONAL): Call this from an infinite loop in the main thread when using threading and synchronize calls. This will execute any queued synchronize calls
 
 writeToClipboard(text):  Writes the given text to the clipboard
@@ -580,8 +584,9 @@ unhookWndProc(hwnd) - call this when done with the hook.  Not calling this will 
 
 cheatEngineIs64Bit(): Returns true if CE is 64-bit, false if 32-bit
 targetIs64Bit(): Returns true if the target process is 64-bit, false if 32-bit
-
-
+targetIsX86(): Returns true if the target process is x86 based
+targetIsArm(): Returns true if the target process is arm based 
+targetIsAndroid(): Returns true if the target process is running on the Android OS
 
 getCheatEngineDir(): Returns the folder Cheat Engine is located at
 getCheatEngineProcessID(): Returns the processid of cheat engine
@@ -595,6 +600,7 @@ splitDisassembledString(disassembledstring): Returns 4 strings. The address, byt
 getInstructionSize(address): Returns the size of an instruction (basically it disassembles the instruction and returns the number of bytes for you)
 getPreviousOpcode(address): Returns the address of the previous opcode (this is just an estimated guess)
 
+disassembleBytes(hexadecimalbytestring or {bytetable},address OPTIONAL) : Disassembles the given bytes and returns the result. 
 
 beep() : Plays the fabulous beep/ping sound!
 playSound(stream, waittilldone OPTIONAL): Plays the given memorystream containing a .WAV formatted memory object. If waittilldone is true the script will stop executing till the sound has stopped
@@ -670,8 +676,6 @@ getXBox360ControllerState(ControllerID OPTIONAL) : table - Fetches the state of 
 
 
 setXBox360ControllerVibration(ControllerID, leftMotor, rightMotor) - Sets the speed of the left and right vibrating motor inside the controller. Range (0 to 65535 where 0 is off)
-
-connectToCEServer(hostname,port) - Connects to the given host and port. On success, most commands subsequent will be handled by the server. Like processlist, memory reading, etc...
 
 
 
@@ -902,6 +906,7 @@ methods:
   getFont():  Returns the Font object of this object
   setFont():  Assigns a new font object. (Not recommended to use. Change the font object that's already there if you wish to change fonts)
   repaint(): Invalidates the graphical area of the control and forces and update
+  refresh() : updates the control (usually a repaint)
   update() : Only updates the invalidated areas
   setOnClick(functionnameorstring) : Sets the onclick routine
   getOnClick(): Gets the onclick function
@@ -910,6 +915,7 @@ methods:
   sendToBack(): Changes the z-order of the control so it'd at the back
   screenToClient(x,y): Converts screen x,y coordinates to x,y coordinates on the control
   clientToScreen(x,y): Converts control x,y coordinates to screen coordinates
+
 
 GraphicsObject : (GraphicsObject->Object)
 
@@ -1053,6 +1059,8 @@ properties
 methods
   add(bitmap, bitmapmask OPTIONAL):integer - Adds a new bitmap the list and returns the index of the newly added entry
   draw(canvas, x,y, index) - Draws the image at the index to the specific x,y coordinates on the canvas
+  getBitmap(index, bitmap, OPTIONAL effect) - Draw the specified image to the provided bitmap. Effect can be :  0=gdeNormal, 1=gdeDisabled, 2=gdeHighlighted, 3=gdeShadowed, 4=gde1Bit
+
 
 Stringlist Class: (Inheritance : Strings->Object)
 createStringlist() : Creates a stringlist class object (for whatever reason, lua strings are probably easier to use)
@@ -1432,6 +1440,7 @@ properties
   Items: Strings - Strings derived object containings all the items in the list
   ItemIndex: integer - Get selected index. -1 is nothing selected
   Canvas: Canvas - The canvas object used to render on the object
+  DroppedDown: boolean - True if currently dropped down (can be set as well)
 
 methods
   clear()
@@ -1532,6 +1541,8 @@ Collection Class: (Inheritance: Object)
 
 properties
   Count: integer
+  Items[index]: CollectionItem
+  []=Items[index]
 
 methods
   clear(collection)
@@ -1781,7 +1792,6 @@ methods
   ellipse(x1,y1,x2,y2)
   gradientFill(x1,y1,x2,y2, startcolor, stopcolor, direction) : Gradient fills a rectangle. Direction can be 0 or 1. 0=Vertical 1=Horizontal
   copyRect(dest_x1,dest_y1,dest_x2,dest_y2, sourceCanvas, source_x1,source_y1,source_x2,source_y2) : Draws an image from one source to another. Useful in cases of doublebuffering
-  strectDraw(rect
   draw(x,y, graphic) : Draw the image of a specific Graphic class
   stretchDraw(rect, graphic): Draw the image of a specific Graphic class and stretch it so it fits in the given rectangle
   getClipRect() : Returns a table containing the fields Left, Top, Right and Bottom, which define the invalidated region of the graphical object. Use this to only render what needs to be rendered in the onPaint event of objects
@@ -2023,6 +2033,8 @@ methods
   writeDword(integer)
   readQword(): integer
   writeQword(integer)
+  readString(stringlengthinbytes) : Reads a given stringcount
+  writeString(string, include0terminator: boolean OPTIONAL=false)
   readAnsiString(): string
   writeAnsiString(string)
 
@@ -2038,7 +2050,7 @@ methods
   saveToFile(filename) : Writes the contents of the memory stream to the specified file
   loadFromFileNoError(filename):boolean,string - Replaces the contents in the memory stream with the contents of a file on disk. On success returns true, else false with a secondary return the error message
   saveToFileNoError(filename):boolean,string - Writes the contents of the memory stream to the specified file. On success returns true, else false with a secondary return the error message
-
+  clear(): sets the size to 0
 
 
 FileStream Class (Inheritance: HandleStream->Stream->Object)
@@ -2061,6 +2073,7 @@ createTableFile(filename, filepath OPTIONAL): TableFile - Add a new file to your
 properties
   Name: string
   Stream: MemoryStream
+  DoNotSave: boolean
 
 methods
   delete() : Deletes this file from your table.
@@ -2131,6 +2144,7 @@ properties
       mrhDecreaseValue(7):  Decreases the current value with the value property (see value)
   value: string - Value used depending on what kind of hotkey is used
   ID: integer - Unique id of this hotkey (ReadOnly)
+  Active: boolean - True if it's hotkey will be handled, false if this hotkey is ignored
   Description: string - The description of this hotkey  
   HotkeyString: string - The hotkey formatted as a string (ReadOnly)
   ActivateSound: string - Tablefile name of a WAV file inside the table which will get played on activate events
@@ -2219,8 +2233,8 @@ properties
   OnDeactivate: function(memoryrecord,before,currentstate):boolean - The function to call when the memoryrecord will change (or changed) Active to false. If before is true, not returning true will cause the deactivation to stop.
   OnDestroy: function() - Called when the memoryrecord is destroyed.
   OnGetDisplayValue: function(memoryrecord,valuestring):boolean,string - This function gets called when rendering the value of a memory record. Return true and a new string to override the value shown
-  OnChangedValue: function(memoryrecord, oldvalue, newvalue): This function gets called whenever the value of a memory record has changed
-  OnChangedValueByUser: function(memoryrecord, oldvalue, newvalue):This function gets called whenever the value of a memory record has changed by the user
+  OnValueChanged: function(memoryrecord, oldvalue, newvalue): This function gets called whenever the value of a memory record has changed
+  OnValueChangedByUser: function(memoryrecord, oldvalue, newvalue):This function gets called whenever the value of a memory record has changed by the user
   DontSave: boolean - Don't save this memoryrecord and it's children
 
 methods
@@ -2696,6 +2710,7 @@ Properties:
   Size: Integer - The number of bytes between the last element and the start. ReadOnly
   Count: Integer - Number of elements in the structure. ReadOnly
   Element[]: structureElement - Returns the structure element at the given index. Readonly
+  [] = Element[]
 Methods:
   getName(): Returns the name
   setName(name): Sets the name
@@ -3147,14 +3162,20 @@ properties
 methods
   lock() : Acquire a lick on this pipe till unlock is called. If lock can not be acquired, wait. Recursive calls are allowed
   unlock()
+  readIntoStream(stream,size)
+  writeFromStream(stream,size OPTIONAL) : Writes the contents of the stream for size bytes into the pipe. If size is omitted, it sends all from the current pointer
+
   writeBytes(ByteTable, size OPTIONAL): Writes the provided byte table to the pipe. if size is not provided, the whole table is sent. Returns the number of bytes sent, or nil on failure
   readBytes(size: integer): returns a byte table from the pipe, or nil on failure
 
   readDouble(): Read a double from the pipe, nil on failure
   readFloat(): Read a float from the pipe, nil on failure
   readQword(): Read an 8 byte value from the pipe, nil on failure
+  readQwords(count): Reads 'count' times 8 byte values from the pipe and returns it as a table
   readDword(): Read a 4 byte value from the pipe, nil on failure
+  readDwords(count): Reads 'count' times 4 byte values from the pipe and returns it as a table
   readWord(): Read a 2 byte value from the pipe, nil on failure
+  readWords(count): Reads 'count' times 2 byte values from the pipe and returns it as a table
   readByte(): Read a byte from the pipe, nil on failure
 
   readString(size: integer): Reads a string from the pipe, nil on failure.  (Can support 0-byte chars)
@@ -3914,6 +3935,236 @@ createXMLDocumentFromStream(stream) - reads the given stream and returns an XMLD
 
 properties
 methods
+
+VirtualTreeColumn class(Inheritance: CollectionItem->Persistent->Object):
+properties
+  Index: integer - The position of this column in the header
+  Text: string - the text the column shows
+  Visible: shortcut for coVisible in Options
+  Options: set(string):  a comma seperated list of the folowing options:
+             coAllowClick           - Column can be clicked (must be enabled too).
+             coDraggable            - Column can be dragged.
+             coEnabled              - Column is enabled.
+             coParentBidiMode       - Column uses the parent's bidi mode.
+             coParentColor          - Column uses the parent's background color.
+             coResizable            - Column can be resized.
+             coShowDropMark         - Column shows the drop mark if it is currently the drop target.
+             coVisible              - Column is shown.
+             coAutoSpring           - Column takes part in the auto spring feature of the header (must be resizable too).
+             coFixed                - Column is fixed and can not be selected or scrolled etc.
+             coSmartResize          - Column is resized to its largest entry which is in view (instead of its largest visible entry).
+             coAllowFocus           - Column can be focused.
+             coDisableAnimatedResize- Column resizing is not animated.
+             coWrapCaption          - Caption could be wrapped across several header lines to fit columns width.
+             coUseCaptionAlignment  - Column's caption has its own aligment.
+             coEditable             - Column can be edited                      
+    
+methods
+
+VirtualTreeColunmns class:
+properties
+  []: VirtualTreeColunmn
+
+methods
+  add(text OPTIONAL) : Created ands returns a new VirtualTreeColumn object
+
+Header class:
+properties
+  AutoSizeIndex: integer - When Options contains hoAutoResize this determines which column will be resized on resize of the control
+  AutoResize: boolean - shortcut to access the hoAutoResize flag in Options
+  MainColumn: integer - Column index to draw the treepart in.  (e.g: column0 is not visible)
+  Columns: VirtualTreeColunmns  
+  Options: set(string) - Options is a comma seperated string which can be one of the following:
+              hoAutoResize            - Adjust a column so that the header never exceeds the client width of the owner control.
+              hoColumnResize          - Resizing columns with the mouse is allowed.
+              hoDblClickResize        - Allows a column to resize itself to its largest entry.
+              hoDrag                  - Dragging columns is allowed.
+              hoHotTrack              - Header captions are highlighted when mouse is over a particular column.
+              hoOwnerDraw             - Header items with the owner draw style can be drawn by the application via event.
+              hoRestrictDrag          - Header can only be dragged horizontally.
+              hoShowHint              - Show application defined header hint.
+              hoShowImages            - Show header images.
+              hoShowSortGlyphs        - Allow visible sort glyphs.
+              hoVisible               - Header is visible.
+              hoAutoSpring            - Distribute size changes of the header to all columns, which are sizable and have the// coAutoSpring option enabled.
+              hoFullRepaintOnResize   - Fully invalidate the header (instead of subsequent columns only) when a column is resized.
+              hoDisableAnimatedResize - Disable animated resize for all columns.
+              hoHeightResize          - Allow resizing header height via mouse.
+              hoHeightDblClickResize  - Allow the header to resize itself to its default height.
+              hoHeaderClickAutoSort   - Clicks on the header will make the clicked column the SortColumn or toggle sort direction if it already was the sort column             
+
+  
+methods
+
+
+StringTreeOptions class:
+properties
+    AnimationOptions: comma seperated string containing one or more of:
+           toAnimatedToggle           - Expanding and collapsing a node is animated (quick window scroll).
+           toAdvancedAnimatedToggle   - Do some advanced animation effects when toggling a node.        
+
+    AutoOptions: comma seperated string containing one or more of: 
+           toAutoDropExpand           - Expand node if it is the drop target for more than a certain time.
+           toAutoExpand               - Nodes are expanded (collapsed) when getting (losing) the focus.
+           toAutoScroll               - Scroll if mouse is near the border while dragging or selecting.
+           toAutoScrollOnExpand       - Scroll as many child nodes in view as possible after expanding a node.
+           toAutoSort                 - Sort tree when Header.SortColumn or Header.SortDirection change or sort node if child nodes are added.
+           toAutoSpanColumns          - Large entries continue into next column(s) if there's no text in them (no clipping).
+           toAutoTristateTracking     - Checkstates are automatically propagated for tri state check boxes.
+           toAutoHideButtons          - Node buttons are hidden when there are child nodes, but all are invisible.
+           toAutoDeleteMovedNodes     - Delete nodes which where moved in a drag operation (if not directed otherwise).
+           toDisableAutoscrollOnFocus - Disable scrolling a node or column into view if it gets focused.
+           toAutoChangeScale          - Change default node height automatically if the system's font scale is set to big fonts.
+           toAutoFreeOnCollapse       - Frees any child node after a node has been collapsed (HasChildren flag stays there).
+           toDisableAutoscrollOnEdit  - Do not center a node horizontally when it is edited.
+           toAutoBidiColumnOrdering   - When set then columns (if any exist) will be reordered from lowest index to highest index and vice versa when the tree's bidi mode is changed.          
+
+    MiscOptions: comma seperated string containing one or more of:
+           toAcceptOLEDrop            - Register tree as OLE accepting drop target
+           toCheckSupport             - Show checkboxes/radio buttons.
+           toEditable                 - Node captions can be edited.
+           toFullRepaintOnResize      - Fully invalidate the tree when its window is resized (CS_HREDRAW/CS_VREDRAW).
+           toGridExtensions           - Use some special enhancements to simulate and support grid behavior.
+           toInitOnSave               - Initialize nodes when saving a tree to a stream.
+           toReportMode               - Tree behaves like TListView in report mode.
+           toToggleOnDblClick         - Toggle node expansion state when it is double clicked.
+           toWheelPanning             - Support for mouse panning (wheel mice only). This option and toMiddleClickSelect are mutal exclusive, where panning has precedence.
+           toReadOnly                 - The tree does not allow to be modified in any way. No action is executed and node editing is not possible.
+           toVariableNodeHeight       - When set then GetNodeHeight will trigger OnMeasureItem to allow variable node heights.
+           toFullRowDrag              - Start node dragging by clicking anywhere in it instead only on the caption or image. Must be used together with toDisableDrawSelection.
+           toNodeHeightResize         - Allows changing a node's height via mouse.
+           toNodeHeightDblClickResize - Allows to reset a node's height to FDefaultNodeHeight via a double click.
+           toEditOnClick              - Editing mode can be entered with a single click
+           toEditOnDblClick           - Editing mode can be entered with a double click
+           toReverseFullExpandHotKey  - Used to define Ctrl+'+' instead of Ctrl+Shift+'+' for full expand (and similar for collapsing)  
+
+    PaintOptions: comma seperated string containing one or more of:
+           toHideFocusRect            - Avoid drawing the dotted rectangle around the currently focused node.
+           toHideSelection            - Selected nodes are drawn as unselected nodes if the tree is unfocused.
+           toHotTrack                 - Track which node is under the mouse cursor.
+           toPopupMode                - Paint tree as would it always have the focus (useful for tree combo boxes etc.)
+           toShowBackground           - Use the background image if there's one.
+           toShowButtons              - Display collapse/expand buttons left to a node.
+           toShowDropmark             - Show the dropmark during drag'n drop operations.
+           toShowHorzGridLines        - Display horizontal lines to simulate a grid.
+           toShowRoot                 - Show lines also at top level (does not show the hidden/internal root node).
+           toShowTreeLines            - Display tree lines to show hierarchy of nodes.
+           toShowVertGridLines        - Display vertical lines (depending on columns) to simulate a grid.
+           toThemeAware               - Draw UI elements (header, tree buttons etc.) according to the current theme if enabled (Windows XP+ only, application must be themed).
+           toUseBlendedImages         - Enable alpha blending for ghosted nodes or those which are being cut/copied.
+           toGhostedIfUnfocused       - Ghosted images are still shown as ghosted if unfocused (otherwise the become non-ghosted images).
+           toFullVertGridLines        - Display vertical lines over the full client area, not only the space occupied by nodes. This option only has an effect if toShowVertGridLines is enabled too.
+           toAlwaysHideSelection      - Do not draw node selection, regardless of focused state.
+           toUseBlendedSelection      - Enable alpha blending for node selections.
+           toStaticBackground         - Show simple static background instead of a tiled one.
+           toChildrenAbove            - Display child nodes above their parent.
+           toFixedIndent              - Draw the tree with a fixed indent.
+           toUseExplorerTheme         - Use the explorer theme if run under Windows Vista (or above).
+           toHideTreeLinesIfThemed    - Do not show tree lines if theming is used.
+           toShowFilteredNodes        - Draw nodes even if they are filtered out.              
+
+    SelectionOptions: comma seperated string containing one or more of:
+           toDisableDrawSelection     - Prevent user from selecting with the selection rectangle in multiselect mode.
+           toExtendedFocus            - Entries other than in the main column can be selected, edited etc.
+           toFullRowSelect            - Hit test as well as selection highlight are not constrained to the text of a node.
+           toLevelSelectConstraint    - Constrain selection to the same level as the selection anchor.
+           toMiddleClickSelect        - Allow selection, dragging etc. with the middle mouse button. This and toWheelPanning are mutual exclusive.
+           toMultiSelect              - Allow more than one node to be selected.
+           toRightClickSelect         - Allow selection, dragging etc. with the right mouse button.
+           toSiblingSelectConstraint  - Constrain selection to nodes with same parent.
+           toCenterScrollIntoView     - Center nodes vertically in the client area when scrolling into view.
+           toSimpleDrawSelection      - Simplifies draw selection, so a node's caption does not need to intersect with the selection rectangle.
+           toAlwaysSelectNode         - If this flag is set to true, the tree view tries to always have a node selected. This behavior is closer to the Windows TreeView and useful in Windows Explorer style applications.
+           toRestoreSelection         - Set to true if upon refill the previously selected nodes should be selected again. The nodes will be identified by its caption only.     
+
+    StringOptions: comma seperated string containing one or more of:
+           toSaveCaptions             - If set then the caption is automatically saved with the tree node, regardless of what is saved in the user data.
+           toShowStaticText           - Show static text in a caption which can be differently formatted than the caption but cannot be edited.
+           toAutoAcceptEditChange     - Automatically accept changes during edit if the user finishes editing other then VK_RETURN or ESC. If not set then changes are cancelled.    
+
+methods
+
+
+
+VirtualStringTree class:
+createVirtualStringTree(owner)
+properties
+  NodeDataSize: integer - The number of bytes to assign for data storage in a node (default is set to hold enough for a pointer)
+  OnExpanding: function(sender, node): boolean - called when a node gets expended. Return true to allow
+  OnGetText: function(sender, nodeindex, columnindex, node, texttype) : string - called when the text to draw is requested. return the string you wish the field to have
+  OnPaintText: function(sender, canvas, node, column, texttype) - called when the text is about to be painted. Use this to change the canvas font colors or do some background painting
+  OnDrawText: function(sender, canvas, node, column, celltext, cellrect): defaultdraw - called when text is being painted. return true if you wish the normal painting to happen besides your own, false if you wish to do it all yourself
+  OnFreeNode: function(sender, node) - Called when a node gets deleted
+  OnInitNode: function(sender, parentnode, node, initialStates) : initialStates - Called when a node gets created. Return the initialStates set (string) to set it's state. initialStates can be a comma seperated string containing one or more of:     ivsDisabled, ivsExpanded, ivsHasChildren, ivsMultiline, ivsSelected,ivsFiltered, ivsReInit 
+  TreeOptions: StringTreeOptions 
+  FullRowSelect: boolean - Shortcut to TreeOptions->SelectionOptions->toFullRowSelect
+  FocusedNode: node - gets/sets the focused node
+  FocusedColumn: integer - gets/sets the focused column index
+
+  NodeParent[node]: node - gets/sets the node parent
+  NodeHeight[node]: height of the node - gets/sets the height of the node
+  HasChildren[node]: boolean - gets/sets the state that the node has children
+  Selected[node]: boolean - gets/sets the selected state of the node
+  Expanded[node]: boolean - gets/sets if the node is expanded (calls onExpanding when set to true)
+  NodeChildCount[node]: integer - Gets the number of childnodes
+  NodeIndex[node]: integer - Gets the index of the node in relation to it's parent
+
+methods
+  saveToFile(filepath)
+  loadFromFile(filepath)
+
+
+  clear() - deletes all nodes
+  beginUpdate()
+  endUpdate()
+  addChild(parent): node - Adds a child to the tree. Node is an ambiguous object that can only be accessed by the VirtualTreeString object
+  addToSelection(node)
+  removeFromSelection(node)
+
+  getRootNode(): node - returns the rootnode
+
+  nodeSelected(node): boolean - returns true if the node is selected
+  nodeChecked(node): boolean - returns true if the node is checked
+  enumSelectedNodes(): table - returns an indexed table of selected nodes
+  enumCheckedNodes() : table - returns an indexed table of checked nodes
+  enumChildren(node) : table - returns an indexed table of childnodes
+
+  deleteNode(node)  - Deletes the given node
+  deleteSelectedNodes() - Deletes all selected nodes
+  
+  getNodeData(node) : bytetable- returns the data of the node as a bytetable
+  setNodeData(node, bytetable) - sets the data of the node using a bytetable
+  getNodeDataAsInteger(node):integer - returns the node data interpreted as a single integer
+  setNodeDataAsInteger(node, integer) - sets the node data as an integer
+  getNodeDataPointer(node): integer - Returns the pointer to the node data. You can use the Read/Write*Local functions to access it instead of a bytetable. (Handy when nodedatasize is very big)
+
+  getNodeParent(node): node - returns a parent node, or nil
+  getFirstChild(node): node - returns the first child of a node
+  getNextSibling(node): node - gets the next sibling
+  getNodeLevel(node): integer - gets the level at which this node resided (it does this by calling getNodeParent until it hits nil)
+
+----CEServer----
+connectToCEServer(hostname,port) - Connects to the given host and port. On success, most commands subsequent will be handled by the server. Like processlist, memory reading, etc...
+isConnectedToCEServer(): boolean - returns true if currently connected to a ceserver
+getCEServerPath(): string - returns the path where ceserver is located on the target
+getCEServerInterface(): returns a ceserverInterface object 
+
+CEServerInterface class:
+properties
+  connected: boolean
+  path: string
+  Option[optionname]: string
+methods
+  getOptionList(): table - returns an indexed table with all available options. Each table entry contains: optname, parentoptname, optdescription, acceptablevalues, currentvalue, optiontype(0=not an option, just a label, 1=bool, 2=int, 3=float, 4=double, 5=text)
+  getCurrentPath(): Returns the current working path
+  setCurrentPath(): Changes the current working path 
+  enumFiles(path OPTIONAL): Returns an indexed list describing the contents of the given path.  It constists of tables containing 'name' and 'type'.  Type can be : DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK, DT_WHT
+
+  createDir(path): Create the provided path
+  getFilePermission(path) : returns the filemode bitmask of the given file (parse the bitmask yourself)
+  setFilePermission(path, permissions) : sets the filemode bitmask of the given file
+  getFile(path, stream) : creates a file at the given path with the contents of the stream object
+  putFile(path, stream) : reads a file from the given path and stores it in the provided stream object
 
 
 ce lua extensions:

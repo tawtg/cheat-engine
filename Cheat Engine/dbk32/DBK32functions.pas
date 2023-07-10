@@ -432,7 +432,8 @@ var kernel32dll: thandle;
 implementation
 
 {$ifdef windows}
-uses vmxfunctions, DBK64SecondaryLoader, NewKernelHandler, frmDriverLoadedUnit, CEFuncProc, Parsers, mainunit2;
+uses vmxfunctions, DBK64SecondaryLoader, NewKernelHandler, frmDriverLoadedUnit,
+  CEFuncProc, Parsers, mainunit2, libcepack;
 
 resourcestring
 
@@ -454,6 +455,9 @@ resourcestring
   rsAPCRules = 'APC rules';
   rsPleaseRunThe64BitVersionOfCE = 'Please run the 64-bit version of '+strCheatEngine;
   rsDBKError = 'DBK Error';
+  rsDBKBlockedDueToVulnerableDriverBlocklist = 'Failure starting dbk because '
+    +'the vulnerable driver blocklist is enabled and dbk has been added to it.'
+    +' Want to know how to disable this?';
 
 var dataloc: widestring;
     applicationPath: widestring;
@@ -512,9 +516,11 @@ procedure ultimap2_disable;
 var
   cc,br: dword;
 begin
-  OutputDebugString('disable ultimap2');
-  cc:=IOCTL_CE_DISABLEULTIMAP2;
-  deviceiocontrol(hultimapdevice,cc,nil,0,nil,0,br,nil);
+  if (hUltimapDevice<>0) and (hUltimapDevice<>INVALID_HANDLE_VALUE) then
+  begin
+    cc:=IOCTL_CE_DISABLEULTIMAP2;
+    deviceiocontrol(hultimapdevice,cc,nil,0,nil,0,br,nil);
+  end;
 end;
 
 
@@ -3146,9 +3152,12 @@ var sav: pchar;
 
 //    servicestatus: _service_status;
 procedure DBK32Initialize;
+var le: integer;
 begin
-
   outputdebugstring('DBK32Initialize');
+
+  if not requiresAdmin then exit;
+
   try
     if hdevice=INVALID_HANDLE_VALUE then
     begin
@@ -3166,6 +3175,7 @@ begin
       iamprotected:=false;
       apppath:=nil;
       hSCManager := OpenSCManager(nil, nil, GENERIC_READ or GENERIC_WRITE);
+
       try
         getmem(apppath,510);
         GetModuleFileNameW(0, apppath, 250);
@@ -3219,6 +3229,13 @@ begin
         end;
 
         driverloc:=extractfilepath(apppath)+sysfile;
+
+        if FileExists(driverloc)=false then
+        begin
+          if FileExists(ChangeFileExt(driverloc,'.cepack')) then
+            ceunpackfile(ChangeFileExt(driverloc,'.cepack'), driverloc, true);
+        end;
+
         ultimapdriverloc:=extractfilepath(apppath)+ultimapsysfile;
       finally
         freememandnil(apppath);
@@ -3381,13 +3398,31 @@ begin
 
           if not startservice(hservice,0,pointer(sav)) then
           begin
-            if getlasterror=577 then
+            le:=getlasterror;
+            if le=577 then
             begin
               if dbvm_version=0 then
                 messagebox(0,PChar(rsPleaseRebootAndPressF8DuringBoot),PChar(rsDbk32Error),MB_ICONERROR or mb_ok);
               failedduetodriversigning:=true;
             end; //else could already be started
+
+            if le<>1056 then
+            begin
+              if dbvm_version=0 then
+              begin
+                if dword(le)=$800B010C then
+                begin
+                  if messagebox(0, PChar(rsDBKBlockedDueToVulnerableDriverBlocklist), pchar(rsDbk32Error), MB_ICONERROR or MB_YESNO)=IDYES then
+                  begin
+                    shellexecute(0, 'open', 'https://cheatengine.org/dbkerror.php', nil, nil, sw_show);
+                  end;
+                end
+                else
+                  messagebox(0,PChar('Failure starting dbk:'+inttostr(le)),PChar(rsDbk32Error),MB_ICONERROR or mb_ok);
+              end;
+            end;
           end;
+
 
           closeservicehandle(hservice);
           hservice:=0;

@@ -19,8 +19,8 @@ uses windows, classes, imagehlp,sysutils,LCLIntf,byteinterpreter, symbolhandler,
 
 {$ifdef darwin}
 uses LCLIntf, LCLType, macport, macportdefines, classes,sysutils,byteinterpreter, symbolhandler, symbolhandlerstructs,
-  CEFuncProc, NewKernelHandler, ProcessHandlerUnit, LastDisassembleData, disassemblerarm,
-  commonTypeDefs, maps, math,vextypedef, syncobjs;
+  CEFuncProc, ProcessHandlerUnit, LastDisassembleData, disassemblerarm,
+  commonTypeDefs, maps, math,vextypedef, syncobjs, NewKernelHandler;
 {$endif}
 
 //translation: There is no fucking way I change the descriptions to resource strings
@@ -76,7 +76,11 @@ type
       skipExtraRegOnMemoryAccess: boolean;
       skipExtraReg: boolean;
       ignoreLForExtraReg: boolean;
+      extrareginstoverride: integer;
     end;
+
+
+
     inttohexs: TIntToHexS;
     RexPrefix: byte;
     riprelative: boolean;
@@ -258,7 +262,7 @@ uses Assemblerunit, StrUtils, Parsers, memoryQuery;
 {$ifdef windows}
 uses Assemblerunit,CEDebugger, debughelper, StrUtils, debuggertypedefinitions,
   Parsers, memoryQuery, binutils, luacaller, vmxfunctions, frmcodefilterunit,
-  BreakpointTypeDef, frmEditHistoryUnit, dialogs;
+  BreakpointTypeDef, frmEditHistoryUnit, dialogs{$ifdef onebytejumps}, autoassemblerexeptionhandler {$endif};
 {$endif}
 
 {$ifdef darwin}
@@ -780,10 +784,15 @@ var dwordptr: ^dword;
     operandstring: string='';
 
     showextrareg: boolean;
+    extrareginst: integer;
 begin
   modrmposition:=position;
   result:='';
   showextrareg:=hasvex and (opcodeflags.skipExtraReg=false);
+  if opcodeflags.extrareginstoverride<>-1 then
+    extrareginst:=opcodeflags.extrareginstoverride
+  else
+    extrareginst:=inst;
 
   if is64bit then
     regprefix:='r'
@@ -1183,7 +1192,7 @@ begin
               8: case inst of
                     0: if rex_w or (opperandsize=64) then result:='r8' else result:='r8d';
                     1: result:='r8w';
-                    2: result:='r8l';
+                    2: result:='r8b';
                     3: result:='mm8';
                     4: if opcodeflags.L then result:='ymm8' else result:='xmm8';
                  end;
@@ -1191,7 +1200,7 @@ begin
               9: case inst of
                    0: if rex_w or (opperandsize=64) then result:='r9' else result:='r9d';
                    1: result:='r9w';
-                   2: result:='r9l';
+                   2: result:='r9b';
                    3: result:='mm9';
                    4: if opcodeflags.L then result:='ymm9' else result:='xmm9';
                  end;
@@ -1199,7 +1208,7 @@ begin
              10: case inst of
                    0: if rex_w or (opperandsize=64) then result:='r10' else result:='r10d';
                    1: result:='r10w';
-                   2: result:='r10l';
+                   2: result:='r10b';
                    3: result:='mm10';
                    4: if opcodeflags.L then result:='ymm10' else result:='xmm10';
                  end;
@@ -1207,7 +1216,7 @@ begin
              11: case inst of
                    0: if rex_w or (opperandsize=64) then result:='r11' else result:='r11d';
                    1: result:='r11w';
-                   2: result:='r11l';
+                   2: result:='r11b';
                    3: result:='mm11';
                    4: if opcodeflags.L then result:='ymm11' else result:='xmm11';
                  end;
@@ -1223,7 +1232,7 @@ begin
              13: case inst of
                    0: if rex_w or (opperandsize=64) then result:='r13' else result:='r13d';
                    1: result:='r13w';
-                   2: result:='r13l';
+                   2: result:='r13b';
                    3: result:='mm13';
                    4: if opcodeflags.L then result:='ymm13' else result:='xmm13';
                  end;
@@ -1231,7 +1240,7 @@ begin
              14: case inst of
                    0: if rex_w or (opperandsize=64) then result:='r14' else result:='r14d';
                    1: result:='r14w';
-                   2: result:='r14l';
+                   2: result:='r14b';
                    3: result:='mm14';
                    4: if opcodeflags.L then result:='ymm14' else result:='xmm14';
                  end;
@@ -1239,7 +1248,7 @@ begin
              15: case inst of
                    0: if rex_w or (opperandsize=64) then result:='r15' else result:='r15d';
                    1: result:='r15w';
-                   2: result:='r15l';
+                   2: result:='r15b';
                    3: result:='mm15';
                    4: if opcodeflags.L then result:='ymm15' else result:='xmm15';
                  end;
@@ -1251,7 +1260,7 @@ begin
     end;
     if showextrareg then
     begin
-      case inst of
+      case extrareginst of
         0: if rex_w then ep:=regnrtostr(rt64, not opcodeflags.vvvv and $f) else ep:=regnrtostr(rt32, not opcodeflags.vvvv and $f);
         1: ep:=regnrtostr(rt16, not opcodeflags.vvvv and $f);
         2: ep:=regnrtostr(rt8, not opcodeflags.vvvv and $f);
@@ -1617,6 +1626,7 @@ var
     actualread: PtrUInt;
     startoffset, initialoffset: ptrUint;
     tempresult, tempdescription: string;
+    equationstr: string;
     tempst: string;
     wordptr: ^word;
     dwordptr: ^dword;
@@ -1648,6 +1658,7 @@ begin
 
   hasvsib:=false;
   ZeroMemory(@opcodeflags,sizeof(opcodeflags));
+  opcodeflags.extrareginstoverride:=-1;
 
   if (self = visibleDisassembler) and (GetCurrentThreadId<>MainThreadID) then
   begin
@@ -1731,7 +1742,13 @@ begin
         {$endif}
 
         if symhandler.getmodulebyaddress(offset, mi) then
+        begin
           is64bit:=mi.is64bitmodule;
+          if not is64bit then
+          asm
+          nop
+          end;
+        end;
 
       end;
 
@@ -3040,6 +3057,7 @@ begin
                               else
                                 lastdisassembledata.opcode:='cvtsi2ss';
 
+                              opcodeflags.extrareginstoverride:=4;
                               lastdisassembledata.parameters:=xmm(memory[2])+modrm(memory,prefix2,2,0,last,mRight);
 
                               inc(offset,last-1);
@@ -8928,66 +8946,100 @@ begin
 
                     $c2 : begin
                             lastdisassembledata.isfloat:=true;
+
+                            lastdisassembledata.parameters:=xmm(memory[2])+modrm(memory,prefix2,2,4,last,128,0,mRight);
+                            lastdisassembledata.parametervaluetype:=dvtvalue;
+                            lastdisassembledata.parametervalue:=memory[last];
+
+                            equationstr:='';
+
+                            case lastdisassembledata.parametervalue of
+                              0: equationstr:='eq';
+                              1: equationstr:='lt';
+                              2: equationstr:='le';
+                              3: equationstr:='unord';
+                              4: equationstr:='neq';
+                              5: equationstr:='nlt';
+                              6: equationstr:='nle';
+                              7: equationstr:='ord';
+                              else
+                              begin
+                                if hasvex then
+                                begin
+                                  case lastdisassembledata.parametervalue of
+                                     $8: equationstr:='eq_uq';
+                                     $9: equationstr:='nge';
+                                     $a: equationstr:='ngt';
+                                     $b: equationstr:='false';
+                                     $c: equationstr:='neq_oq';
+                                     $d: equationstr:='ge';
+                                     $e: equationstr:='gt';
+                                     $f: equationstr:='true';
+                                    $10: equationstr:='eq_os';
+                                    $11: equationstr:='lt_oq';
+                                    $12: equationstr:='le_oq';
+                                    $13: equationstr:='unord_s';
+                                    $14: equationstr:='neq_us';
+                                    $15: equationstr:='nlt_uq';
+                                    $16: equationstr:='nle_uq';
+                                    $17: equationstr:='ord_s';
+                                    $18: equationstr:='eq_us';
+                                    $19: equationstr:='nge_uq';
+                                    $1a: equationstr:='ngt_uq';
+                                    $1b: equationstr:='false_os';
+                                    $1c: equationstr:='neq_os';
+                                    $1d: equationstr:='ge_oq';
+                                    $1e: equationstr:='gt_oq';
+                                    $1f: equationstr:='true_us';
+                                  end;
+                                end
+                              end;
+                            end;
+
                             if $f2 in prefix2 then
                             begin
+                              description:='compare scalar double-precision floating-point values';
+                              lastdisassembledata.opcode:='cmp'+equationstr+'sd';
+                              if equationstr='' then
+                                lastdisassembledata.parameters:=lastdisassembledata.parameters+','+inttohexs(lastdisassembledata.parametervalue,2);
 
-                              description:='compare scalar dpuble-precision floating-point values';
-                              if hasvex then
-                                lastdisassembledata.opcode:='vcmpsd'
-                              else
-                                lastdisassembledata.opcode:='cmpsd';
-                              lastdisassembledata.parameters:=xmm(memory[2])+modrm(memory,prefix2,2,4,last,128,0,mRight);
-
-                              lastdisassembledata.parametervaluetype:=dvtvalue;
-                              lastdisassembledata.parametervalue:=memory[last];
-                              lastdisassembledata.parameters:=lastdisassembledata.parameters+','+inttohexs(lastdisassembledata.parametervalue,2);
-                              inc(offset,last);
+                              lastdisassembledata.datasize:=8;
                             end
                             else
                             if $f3 in prefix2 then
                             begin
                               description:='packed single-fp compare';
-                              if hasvex then
-                                lastdisassembledata.opcode:='vcmpss'
-                              else
-                                lastdisassembledata.opcode:='cmpss';
-                              lastdisassembledata.parameters:=xmm(memory[2])+modrm(memory,prefix2,2,4,last,128,0,mRight);
-                              lastdisassembledata.parametervaluetype:=dvtvalue;
-                              lastdisassembledata.parametervalue:=memory[last];
-                              lastdisassembledata.parameters:=lastdisassembledata.parameters+','+inttohexs(lastdisassembledata.parametervalue,2);
+                              lastdisassembledata.opcode:='cmp'+equationstr+'ss';
+                              if equationstr='' then
+                                lastdisassembledata.parameters:=lastdisassembledata.parameters+','+inttohexs(lastdisassembledata.parametervalue,2);
+
                               lastdisassembledata.datasize:=4;
-                              inc(offset,last);
                             end
                             else
                             begin
                               if $66 in prefix2 then
                               begin
                                 description:='compare packed double-precision floating-point values';
-                                if hasvex then
-                                  lastdisassembledata.opcode:='vcmppd'
-                                else
-                                  lastdisassembledata.opcode:='cmppd';
-                                lastdisassembledata.parameters:=xmm(memory[2])+modrm(memory,prefix2,2,4,last,128,0,mRight);
-                                lastdisassembledata.parametervaluetype:=dvtvalue;
-                                lastdisassembledata.parametervalue:=memory[last];
-                                lastdisassembledata.parameters:=lastdisassembledata.parameters+','+inttohexs(lastdisassembledata.parametervalue,2);
-                                inc(offset,last);
+                                lastdisassembledata.opcode:='cmp'+equationstr+'pd';
+                                if equationstr='' then
+                                  lastdisassembledata.parameters:=lastdisassembledata.parameters+','+inttohexs(lastdisassembledata.parametervalue,2);
+
                               end
                               else
                               begin
                                 description:='packed single-fp compare';
-                                if hasvex then
-                                  lastdisassembledata.opcode:='vcmpps'
-                                else
-                                  lastdisassembledata.opcode:='cmpps';
-                                lastdisassembledata.parameters:=xmm(memory[2])+modrm(memory,prefix2,2,4,last,128,0,mRight);
-                                lastdisassembledata.parametervaluetype:=dvtvalue;
-                                lastdisassembledata.parametervalue:=memory[last];
-                                lastdisassembledata.parameters:=lastdisassembledata.parameters+','+inttohexs(lastdisassembledata.parametervalue,2);
+                                lastdisassembledata.opcode:='cmp'+equationstr+'ps';
+                                if equationstr='' then
+                                  lastdisassembledata.parameters:=lastdisassembledata.parameters+','+inttohexs(lastdisassembledata.parametervalue,2);
+
                                 lastdisassembledata.datasize:=4;
-                                inc(offset,last);
                               end;
                             end;
+
+                            if hasvex then
+                              lastdisassembledata.opcode:='v'+lastdisassembledata.opcode;
+
+                            inc(offset,last);
                           end;
 
                     $c3 : begin
@@ -9728,9 +9780,9 @@ begin
                                 lastdisassembledata.opcode:='vcvtdq2pd'
                               else
                                 lastdisassembledata.opcode:='cvtdq2pd';
-                              lastdisassembledata.parameters:=xmm(memory[2])+',';
-                              opcodeflags.L:=false;
-                              lastdisassembledata.parameters:=lastdisassembledata.parameters+xmm(memory[2])+modrm(memory,prefix2,2,4,last,mRight);
+
+                              opcodeflags.skipExtraReg:=true;
+                              lastdisassembledata.parameters:=xmm(memory[2])+modrm(memory,prefix2,2,4,last,mRight);
 
                               inc(offset,last-1);
                             end
@@ -10903,7 +10955,9 @@ begin
 
                     lastdisassembledata.parameters:=' '+r64(memory[1])+modrm(memory,prefix2,1,0,last,32,0,mRight);
                     inc(offset,last-1);
-                    description:='Move doubleword to quadword with signextension'
+                    description:='Move doubleword to quadword with signextension';
+
+                    LastDisassembleData.datasize:=4;
                   end
                   else
                   begin
@@ -13193,6 +13247,19 @@ begin
                   //should not be shown if its being debugged using int 3'
                   description:='call to interrupt procedure-3:trap to debugger';
                   lastdisassembledata.opcode:='int 3';
+
+                  {$ifdef onebytejumps}
+                  if AutoAssemblerExceptionHandlerHasEntries then
+                  begin
+                    if IsAutoAssemblerExceptionRIPChanger(LastDisassembleData.address, tempaddress) then
+                    begin
+                      lastdisassembledata.opcode:='jmp1';
+                      LastDisassembleData.parameters:=inttohexs(tempaddress,8);
+                    end;
+                  end;
+                  {$endif}
+
+
                 end;
 
           $cd : begin

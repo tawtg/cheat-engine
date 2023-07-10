@@ -35,12 +35,17 @@ type
     Button12: TButton;
     Button13: TButton;
     Button14: TButton;
+    Button15: TButton;
+    Button16: TButton;
+    Button17: TButton;
     Button2: TButton;
+    Edit1: TEdit;
     edtTimeout: TEdit;
     Label1: TLabel;
     Button3: TButton;
     Label10: TLabel;
     Label11: TLabel;
+    Label12: TLabel;
     Label2: TLabel;
     Button4: TButton;
     Label3: TLabel;
@@ -64,6 +69,9 @@ type
     procedure Button12Click(Sender: TObject);
     procedure Button13Click(Sender: TObject);
     procedure Button14Click(Sender: TObject);
+    procedure Button15Click(Sender: TObject);
+    procedure Button16Click(Sender: TObject);
+    procedure Button17Click(Sender: TObject);
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure FormCreate(Sender: TObject);
@@ -83,6 +91,11 @@ type
     originalIntegrityValue: dword;
     h: dword;
     cht: TChangeHealthThread;
+
+
+    procedure detectdbgmsg1;
+    procedure detectdbgmsg2;
+
   public
     { Public declarations }
     procedure ecx(Sender : TObject; E : Exception);
@@ -373,7 +386,11 @@ end;
 
 function exhandler(ExceptionInfo: PEXCEPTION_POINTERS): LONG; stdcall;
 begin
+  {$ifdef cpu64}
   form1.memo1.lines.add(inttohex(ExceptionInfo.ContextRecord^.Rip,8)+' RFLAGS='+inttohex(ExceptionInfo.ContextRecord^.EFlags,4)+' DR6='+inttohex(ExceptionInfo.ContextRecord^.Dr6,8));
+  {$else}
+  form1.memo1.lines.add(inttohex(ExceptionInfo.ContextRecord^.Eip,8)+' EFLAGS='+inttohex(ExceptionInfo.ContextRecord^.EFlags,4)+' DR6='+inttohex(ExceptionInfo.ContextRecord^.Dr6,8));
+  {$endif}
 
   if debugtest then
   begin
@@ -435,6 +452,7 @@ end;
 procedure TForm1.Button14Click(Sender: TObject);
 begin
   debugtest:=true;
+  {$ifdef cpu64}
   asm
     pushfq
     pushfq
@@ -470,7 +488,180 @@ begin
     nop
 
   end;
+{$endif}
   debugtest:=false;
+end;
+
+procedure TForm1.Button15Click(Sender: TObject);
+var
+  w: widestring;
+  s: UTF8String;
+  test: array [0..3] of PtrUInt;
+  ok1, ok2: boolean;
+begin
+  ok1:=false;
+  ok2:=false;
+  w:=edit1.text;
+  s:=edit1.text;
+ // OutputDebugStringW(pwidechar(@w[1]));
+
+ try
+   test[0]:=length(s);
+   test[1]:=ptruint(@s[1]);
+   test[2]:=0;
+   test[3]:=0;
+   RaiseException(DBG_PRINTEXCEPTION_C,0,4,@test[0]);
+   showmessage('debugger detected part 1');
+ except
+   ok1:=true;
+ end;
+
+ try
+   test[0]:=length(w);
+   test[1]:=ptruint(@w[1]);
+   test[2]:=0;
+   test[3]:=0;
+   RaiseException($4001000A,0,4,@test[0]);
+   showmessage('debugger detected part 2');
+ except
+   ok2:=true;
+ end;
+
+// if ok1 and ok2 then showmessage('everything ok');
+end;
+
+procedure TForm1.Button16Click(Sender: TObject);
+begin
+ showmessage('weee');
+ {$ifdef cpu64}
+  asm
+    pushfq
+    pop rax
+
+    and rax, $FFFFFFFFFFFFF7FF
+
+    push rax
+    popfq
+    db $ce
+  end;
+ {$else}
+  asm
+    pushfd
+    pop eax
+
+    and eax, $FFFFF7FF
+
+    push eax
+    popfd
+    db $ce
+
+  end;
+{$endif}
+end;
+
+var
+dbgtextw: widestring;
+dbgtexts: UTF8String;
+
+dbmc: integer=0;
+
+procedure TForm1.detectdbgmsg1;
+begin
+  showmessage('debug message detect 1-'+dbmc.ToString);
+end;
+
+procedure TForm1.detectdbgmsg2;
+begin
+  showmessage('debug message detect 2');
+end;
+
+procedure dbgmsgflood(AData : Pointer);
+var
+  test: array [0..3] of PtrUInt;
+begin
+  while true do
+  begin
+    try
+      test[0]:=length(dbgtexts);
+      test[1]:=ptruint(@dbgtexts[1]);
+      test[2]:=0;
+      test[3]:=0;
+
+      RaiseException(DBG_PRINTEXCEPTION_C,0,4,@test[0]);
+      tthread.Synchronize(nil,form1.detectdbgmsg1);
+      exit;
+    except
+
+    end;
+    inc(dbmc);
+
+    try
+      test[0]:=length(dbgtexts);
+      test[1]:=ptruint(@dbgtexts[1]);
+      test[2]:=0;
+      test[3]:=0;
+
+      RaiseException(DBG_PRINTEXCEPTION_C,0,4,@test[0]);
+      tthread.Synchronize(nil,form1.detectdbgmsg1);
+      exit;
+    except
+    end;
+    inc(dbmc);
+
+    try
+      test[0]:=length(dbgtexts);
+      test[1]:=ptruint(@dbgtexts[1]);
+      test[2]:=0;
+      test[3]:=0;
+
+      RaiseException(DBG_PRINTEXCEPTION_C,0,4,@test[0]);
+      tthread.Synchronize(nil,form1.detectdbgmsg1);
+      exit;
+    except
+    end;
+    inc(dbmc);
+
+  {  try
+      test[0]:=length(dbgtextw);
+      test[1]:=ptruint(@dbgtextw[1]);
+      test[2]:=0;
+      test[3]:=0;
+      RaiseException($4001000A,0,4,@test[0]);
+      tthread.Synchronize(nil,form1.detectdbgmsg2);
+      exit;
+    except
+    end;
+
+    try
+      test[0]:=length(dbgtextw);
+      test[1]:=ptruint(@dbgtextw[1]);
+      test[2]:=0;
+      test[3]:=0;
+      RaiseException($4001000A,0,4,@test[0]);
+      tthread.Synchronize(nil,form1.detectdbgmsg2);
+      exit;
+    except
+    end;
+
+    try
+      test[0]:=length(dbgtextw);
+      test[1]:=ptruint(@dbgtextw[1]);
+      test[2]:=0;
+      test[3]:=0;
+      RaiseException($4001000A,0,4,@test[0]);
+      tthread.Synchronize(nil,form1.detectdbgmsg2);
+      exit;
+    except
+    end; }
+
+  end;
+end;
+
+procedure TForm1.Button17Click(Sender: TObject);
+begin
+  dbgtextw:=edit1.text;
+  dbgtexts:=edit1.text;
+  TThread.ExecuteInThread(TThreadExecuteCallback(@dbgmsgflood));
 end;
 
 procedure TForm1.Button2Click(Sender: TObject);
@@ -593,14 +784,23 @@ begin
   label1.caption:=format('%p : %d',[@health, health]);
 end;
 
+var oldt: TChangeHealthLikeAMofo;
+ f: single;
 procedure TForm1.Timer2Timer(Sender: TObject);
 begin
  // button10.click;
+  if oldt<>nil then
+    freeandnil(oldt);
+
+  oldt:=TChangeHealthLikeAMofo.Create(false);
+
+  timer2.Interval:=1+random(2000);
 end;
 
 procedure TForm1.Timer3Timer(Sender: TObject);
 begin
-
+  f:=f+0.1;
+  label12.caption:=format('%p: %.2f',[@f, f]);
 end;
 
 end.

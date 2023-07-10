@@ -146,7 +146,20 @@ type
     end;
   end;
 
-  TNetworkARM_64Context=TARM64CONTEXT;
+  TNetworkARM_64Context=record
+      regs: TARM64CONTEXT_REGISTERS;
+      SP:  QWORD;
+      PC:  QWORD;
+      PSTATE: QWORD;
+
+      fp: record
+        vregs: array [0..31] of m128a; //  __uint128_t vregs[32];
+        fpsr: UINT32; // __u32 fpsr;
+        fpcr: UINT32; // __u32 fpcr;
+        reserved: array [0..1] of UINT32; //             __u32 __reserved[2];
+      end;
+  end;
+
 
   TNetworkContext=packed record
     contextsize: uint32;
@@ -165,6 +178,7 @@ var
   context: TNetworkContext;
   c: TCEConnection=nil;
 begin
+  result:=false;
   c:=getConnection;
   if c<>nil then
   begin
@@ -332,6 +346,7 @@ var
   carm: TNetworkContext;
   c: TCEConnection=nil;
 begin
+  result:=false;
   c:=getConnection;
   if c<>nil then
   begin
@@ -453,7 +468,19 @@ begin
             exit(false);
           end;
 
-          lpContext:=carm64^.contextarm64;
+          lpContext.regs:=carm64^.contextarm64.regs;
+          lpContext.SP:=carm64^.contextarm64.SP;
+          lpContext.PC:=carm64^.contextarm64.PC;
+          lpContext.PSTATE:=carm64^.contextarm64.PSTATE;
+          copymemory(@lpContext.fp.vregs[0], @carm64^.contextarm64.fp.vregs[0],32*16);
+          lpContext.fp.fpsr:=carm64^.contextarm64.fp.fpsr;
+          {$ifdef darwin}
+          lpContext.fp.fpcs:=carm64^.contextarm64.fp.fpcr;
+          {$else}
+          lpContext.fp.fpcr:=carm64^.contextarm64.fp.fpcr;
+          {$endif}
+
+
           result:=true;
         end; //else use GetThreadContextArm()
       end; //else use GetThreadContext
@@ -469,12 +496,24 @@ var
   carm64: TNetworkContext;
   c: TCEConnection=nil;
 begin
+  result:=false;
   c:=getConnection;
   if c<>nil then
   begin
     carm64.contextsize:=sizeof(TNetworkARM_64Context)+8;
     carm64.contexttype:=3; //arm64
-    carm64.contextarm64:=lpContext;
+
+    carm64.contextarm64.regs:=lpcontext.regs;
+    carm64.contextarm64.SP:=lpcontext.SP;
+    carm64.contextarm64.PC:=lpcontext.PC;
+    carm64.contextarm64.PSTATE:=lpcontext.PSTATE;
+    copymemory(@carm64.contextarm64.fp.vregs[0], @lpcontext.fp.vregs[0],32*16);
+    carm64.contextarm64.fp.fpsr:=lpcontext.fp.fpsr;
+    {$ifdef darwin}
+    carm64.contextarm64.fp.fpcr:=lpcontext.fp.fpcs;
+    {$else}
+    carm64.contextarm64.fp.fpcr:=lpcontext.fp.fpcr;
+    {$endif}
 
     result:=c.setContext(processhandle, hThread, @carm64, carm64.contextsize);
   end;
@@ -656,6 +695,9 @@ begin
 
   //no software breakpoint for now
   fDebuggerCapabilities:=[dbcHardwareBreakpoint];
+
+  if processhandler.SystemArchitecture=archX86 then
+    fDebuggerCapabilities:=fDebuggerCapabilities+[dbcCanUseInt1BasedBreakpoints];
 
 end;
 

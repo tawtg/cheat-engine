@@ -21,7 +21,8 @@ uses
   disassemblerComments, multilineinputqueryunit, frmMemoryViewExUnit,
   LastDisassembleData, ProcessHandlerUnit, commonTypeDefs, binutils,
   fontSaveLoadRegistry, LazFileUtils, ceregistry, frmCR3SwitcherUnit,
-  betterControls, ScrollBoxEx, contexthandler{$ifdef darwin}, macport, macportdefines{$endif} ;
+  betterControls, ScrollBoxEx, contexthandler,iptlogdisplay
+  {$ifdef darwin}, macport, macportdefines{$endif} ;
 
 
 type
@@ -47,7 +48,7 @@ type
     ESPlabel: TLabel;
     FSlabel: TLabel;
     GSlabel: TLabel;
-    MenuItem8: TMenuItem;
+    miIPTLog: TMenuItem;
     miShowRelativeDisassembler: TMenuItem;
     miArchX86: TMenuItem;
     miArchArm: TMenuItem;
@@ -75,7 +76,7 @@ type
     mvImageList: TImageList;
     MenuItem1: TMenuItem;
     MenuItem10: TMenuItem;
-    MenuItem11: TMenuItem;
+    miSearchForAccessibleStrings: TMenuItem;
     MenuItem12: TMenuItem;
     MenuItem13: TMenuItem;
     MenuItem14: TMenuItem;
@@ -91,19 +92,19 @@ type
     MenuItem17: TMenuItem;
     MenuItem18: TMenuItem;
     MenuItem19: TMenuItem;
-    MenuItem20: TMenuItem;
+    miLoadTrace: TMenuItem;
     dispChar: TMenuItem;
     dispShorts: TMenuItem;
     DispLongs: TMenuItem;
-    MenuItem21: TMenuItem;
-    MenuItem22: TMenuItem;
-    MenuItem23: TMenuItem;
-    MenuItem24: TMenuItem;
-    MenuItem25: TMenuItem;
+    miTextEncoding: TMenuItem;
+    miWatchMemoryPageAccess: TMenuItem;
+    miSetUnsetBookmark: TMenuItem;
+    miGotoBookmark: TMenuItem;
+    miUserWriteInteger: TMenuItem;
     miUltimap2: TMenuItem;
-    MenuItem27: TMenuItem;
-    MenuItem28: TMenuItem;
-    MenuItem29: TMenuItem;
+    miWatchList: TMenuItem;
+    miStackTraceSep: TMenuItem;
+    miCompareStructures: TMenuItem;
     miCodeFilter: TMenuItem;
     miExceptionIgnoreList: TMenuItem;
     N19: TMenuItem;
@@ -167,7 +168,7 @@ type
     miAddEBP: TMenuItem;
     miAddESP: TMenuItem;
     miFindWhatWrites: TMenuItem;
-    MenuItem2: TMenuItem;
+    miSelectCurrentFunction: TMenuItem;
     MenuItem3: TMenuItem;
     miDataBreakPointMenu: TMenuItem;
     miWatchAccess: TMenuItem;
@@ -234,6 +235,7 @@ type
     tbToggleBreakpoint: TToolButton;
     tbRunTill: TToolButton;
     tbSeparator3: TToolButton;
+    tbRunUnhandled: TToolButton;
     View1: TMenuItem;
     Stacktrace1: TMenuItem;
     ScrollBox1: TScrollBox;
@@ -349,7 +351,7 @@ type
     procedure Makepagewritable1Click(Sender: TObject);
     procedure memorypopupPopup(Sender: TObject);
     procedure MenuItem10Click(Sender: TObject);
-    procedure MenuItem11Click(Sender: TObject);
+    procedure miSearchForAccessibleStringsClick(Sender: TObject);
     procedure MenuItem12Click(Sender: TObject);
     procedure MenuItem14Click(Sender: TObject);
     procedure MenuItem8Click(Sender: TObject);
@@ -357,6 +359,7 @@ type
     procedure miCR3SwitcherClick(Sender: TObject);
     procedure miDBVMFindoutwhataddressesthisinstructionaccessesClick(Sender: TObject);
     procedure MenuItem4Click(Sender: TObject);
+    procedure miIPTLogClick(Sender: TObject);
     procedure miOpenInDissectDataClick(Sender: TObject);
     procedure miShowRelativeDisassemblerClick(Sender: TObject);
     procedure miShowSectionAddressesClick(Sender: TObject);
@@ -371,12 +374,12 @@ type
     procedure miUltimapClick(Sender: TObject);
     procedure MenuItem17Click(Sender: TObject);
     procedure MenuItem18Click(Sender: TObject);
-    procedure MenuItem20Click(Sender: TObject);
-    procedure MenuItem22Click(Sender: TObject);
-    procedure MenuItem25Click(Sender: TObject);
+    procedure miLoadTraceClick(Sender: TObject);
+    procedure miWatchMemoryPageAccessClick(Sender: TObject);
+    procedure miUserWriteIntegerClick(Sender: TObject);
     procedure miUltimap2Click(Sender: TObject);
-    procedure MenuItem27Click(Sender: TObject);
-    procedure MenuItem29Click(Sender: TObject);
+    procedure miWatchListClick(Sender: TObject);
+    procedure miCompareStructuresClick(Sender: TObject);
     procedure miAddRefClick(Sender: TObject);
     procedure miBreakOnExceptionsClick(Sender: TObject);
     procedure miChangeProtectionClick(Sender: TObject);
@@ -402,7 +405,7 @@ type
     procedure miCopyBytesOnlyClick(Sender: TObject);
     procedure miDissectData2Click(Sender: TObject);
     procedure miPointerSpiderClick(Sender: TObject);
-    procedure MenuItem2Click(Sender: TObject);
+    procedure miSelectCurrentFunctionClick(Sender: TObject);
     procedure miDataBreakPointMenuClick(Sender: TObject);
     procedure miWatchAccessClick(Sender: TObject);
     procedure miWatchWriteClick(Sender: TObject);
@@ -524,6 +527,7 @@ type
     procedure DisplayTypeClick(Sender: TObject);
     procedure Showjumplines1Click(Sender: TObject);
     procedure Onlyshowjumplineswithinrange1Click(Sender: TObject);
+    procedure View1Click(Sender: TObject);
     procedure Watchmemoryallocations1Click(Sender: TObject);
     procedure Maxstacktracesize1Click(Sender: TObject);
     procedure All1Click(Sender: TObject);
@@ -671,7 +675,9 @@ type
     cancelsearch: boolean;
 
     ischild: boolean; //determines if it's the main memorybrowser or a child
-    backlist: TStack;
+//    backlist: TStack;
+
+    frmiptlog: TfrmIPTLogDisplay;
 
 
 
@@ -703,7 +709,6 @@ type
     procedure miDifferenceClick(Sender: TObject);
     procedure miStopDifferenceClick(Sender: TObject);
     procedure Scrollboxscroll(sender: TObject);
-    procedure AddToDisassemblerBackList(address: pointer);
 
     procedure createcr3switcher;
     property cr3switcher: TfrmCR3Switcher read fcr3switcher;
@@ -758,7 +763,8 @@ uses Valuechange, MainUnit, debugeventhandler, findwindowunit,
   frmExceptionRegionListUnit, frmExceptionIgnoreListUnit, frmcodefilterunit,
   frmDBVMWatchConfigUnit, DBK32functions, DPIHelper, DebuggerInterface,
   DebuggerInterfaceAPIWrapper, BreakpointTypeDef, CustomTypeHandler,
-  frmSourceDisplayUnit, sourcecodehandler, tcclib, mainunit2;
+  frmSourceDisplayUnit, sourcecodehandler, tcclib, mainunit2
+  {$ifdef ONEBYTEJUMPS}, autoassemblerexeptionhandler{$endif};
 
 
 resourcestring
@@ -1254,7 +1260,7 @@ begin
   frmStringMap.show;
 end;
 
-procedure TMemoryBrowser.MenuItem11Click(Sender: TObject);
+procedure TMemoryBrowser.miSearchForAccessibleStringsClick(Sender: TObject);
 begin
   if frmStringPointerscan=nil then
     frmStringpointerscan:=Tfrmstringpointerscan.create(MemoryBrowser);
@@ -1282,11 +1288,7 @@ end;
 
 procedure TMemoryBrowser.MenuItem8Click(Sender: TObject);
 begin
-  processhandler.is64Bit:=true;
-  processhandler.SystemArchitecture:=archX86;
-  UpdateDebugContext(0,0);
 
-  setShowDebugPanels(true);
 end;
 
 
@@ -1348,6 +1350,53 @@ procedure TMemoryBrowser.MenuItem4Click(Sender: TObject);
 begin
   if tbDebug.Visible=true then HideDebugToolbar;
   tbDebug.Tag:=-1;
+end;
+
+procedure TMemoryBrowser.miIPTLogClick(Sender: TObject);
+var log: pointer;
+    logsize: integer;
+begin
+  {$IFDEF WINDOWS}
+  log:=nil;
+  if (debuggerthread<>nil) and (debuggerthread.CurrentThread<>nil) then
+  begin
+    //broken state
+    if debuggerthread.CurrentThread.getLastIPTLog(log,logsize)=false then
+    begin
+      if useintelptfordebug=false then
+      begin
+        if messagedlg('This will require the IPT feature to be enabled in the debugger. Activate it now? (You will need a new break to record a log)', mtConfirmation, [mbyes,mbno],0)=mryes then
+        begin
+          useintelptfordebug:=true;
+          debuggerthread.initIntelPTTracing;
+        end;
+      end
+      else
+      begin
+        if debuggerthread.initIntelPTTracing then
+          messagedlg('Error retrieving the IPT log. Try again later', mtError, [mbok],0)
+        else
+          messagedlg('Error activating the IPT log', mtError, [mbok],0)
+      end;
+      exit;
+    end;
+
+    if frmiptlog=nil then
+    begin
+      frmiptlog:=TfrmIPTLogDisplay.Create(MemoryBrowser);
+      frmiptlog.OnClose:=nil;
+    end;
+
+    frmiptlog.show;
+    if log<>nil then
+    begin
+      frmiptlog.loadlog(debuggerthread.CurrentThread.ThreadId.ToHexString+'-'+GetTickCount.ToHexString,log,logsize, contexthandler.InstructionPointerRegister^.getValue(context));
+      freemem(log);
+    end;
+
+  end;
+  {$ENDIF}
+
 end;
 
 procedure TMemoryBrowser.miOpenInDissectDataClick(Sender: TObject);
@@ -1492,7 +1541,7 @@ begin
   TfrmMemoryViewEx.create(self).show;
 end;
 
-procedure TMemoryBrowser.MenuItem20Click(Sender: TObject);
+procedure TMemoryBrowser.miLoadTraceClick(Sender: TObject);
 var t: Tfrmtracer;
 begin
   t:=TFrmTracer.create(self,false,true);
@@ -1512,7 +1561,7 @@ begin
 
 end;
 
-procedure TMemoryBrowser.MenuItem22Click(Sender: TObject);
+procedure TMemoryBrowser.miWatchMemoryPageAccessClick(Sender: TObject);
 begin
   if frmAccessedMemory=nil then
     frmAccessedMemory:=TfrmAccessedMemory.Create(application);
@@ -1520,7 +1569,7 @@ begin
   frmAccessedMemory.Show;
 end;
 
-procedure TMemoryBrowser.MenuItem25Click(Sender: TObject);
+procedure TMemoryBrowser.miUserWriteIntegerClick(Sender: TObject);
 begin
   if frmEditHistory=nil then
     frmEditHistory:=tfrmEditHistory.create(application);
@@ -1537,7 +1586,7 @@ begin
   frmUltimap2.show;
 end;
 
-procedure TMemoryBrowser.MenuItem27Click(Sender: TObject);
+procedure TMemoryBrowser.miWatchListClick(Sender: TObject);
 begin
   if frmWatchlist=nil then
     frmWatchlist:=tfrmWatchlist.create(Application);
@@ -1546,7 +1595,7 @@ begin
   frmWatchlist.show;
 end;
 
-procedure TMemoryBrowser.MenuItem29Click(Sender: TObject);
+procedure TMemoryBrowser.miCompareStructuresClick(Sender: TObject);
 begin
   if frmStructureCompare=nil then
     frmStructureCompare:=tfrmStructureCompare.create(application);
@@ -1976,7 +2025,7 @@ begin
   frmStringpointerscan.show;
 end;
 
-procedure TMemoryBrowser.MenuItem2Click(Sender: TObject);
+procedure TMemoryBrowser.miSelectCurrentFunctionClick(Sender: TObject);
 var start,stop: ptrUint;
   pa, a: ptruint;
 
@@ -1984,8 +2033,6 @@ var start,stop: ptrUint;
   s: string;
   infloop: integer;
 begin
-  backlist.Push(pointer(disassemblerview.SelectedAddress));
-
   //disassemble the code and find the last address
 //  parametervaluetype:=dvtaddress;
   d:=TDisassembler.create;
@@ -2465,6 +2512,8 @@ begin
     cbOriginalRenderingSystem.checked:=UseOriginalRenderingSystem;
     {$endif}
 
+    cbCenterDisassemblerWhenOutsideView.checked:=disassemblerview.CenterOnAddressChangeOutsideView;
+
 
     lblHexNormal.font.color:=hexview.normalFontColor;
     lblHexNormal.color:=hexview.normalBackgroundColor;
@@ -2509,6 +2558,10 @@ begin
 
       disassemblerview.jlThickness:=jlThickness;
       disassemblerview.jlSpacing:=jlSpacing;
+
+      disassemblerview.CenterOnAddressChangeOutsideView:=cbCenterDisassemblerWhenOutsideView.checked;
+
+
 
       hexview.HexFont:=fontdialog2.Font;
 
@@ -2579,6 +2632,9 @@ begin
       reg.writeInteger('spaceBelowLines', disassemblerview.SpaceBelowLines);
       reg.writeInteger('jlThickness', disassemblerview.jlThickness);
       reg.writeInteger('jlSpacing', disassemblerview.jlSpacing);
+
+
+      reg.WriteBool('CenterOnAddressChangeOutsideView', disassemblerview.CenterOnAddressChangeOutsideView);
     end;
 
     if reg.OpenKey('\Software\'+strCheatEngine+'\Disassemblerview '+inttostr(screen.PixelsPerInch)+'\Font'+darkmodestring,true) then
@@ -2695,7 +2751,6 @@ begin
   a:=disassemblerview.getReferencedByLineAtPos(m);
   if a<>0 then
   begin
-    backlist.Push(pointer(disassemblerview.SelectedAddress));
     disassemblerview.SelectedAddress:=a;
     exit;
   end;
@@ -2725,6 +2780,8 @@ var x: array of integer;
   i: integer;
   c: tcolor;
 begin
+
+
   registerpanelfont:=tfont.Create;
 
   MemoryBrowsers.Add(self);
@@ -2839,6 +2896,9 @@ begin
       if reg.ValueExists('jlSpacing') then
         disassemblerview.jlSpacing:=reg.ReadInteger('jlSpacing');
 
+      if reg.ValueExists('CenterOnAddressChangeOutsideView') then
+        disassemblerview.CenterOnAddressChangeOutsideView:=reg.ReadBool('CenterOnAddressChangeOutsideView');
+
       disassemblerview.reinitialize;
     end;
 
@@ -2912,8 +2972,6 @@ begin
   disassemblerHistory:=TStringList.create;
   memorybrowserHistory:=TStringList.create;
   assemblerHistory:=TStringList.create;
-
-  backlist:=TStack.create;
 
   showvalues:=true;
   sbShowFloats.left:=scrollbox1.Clientwidth-sbShowFloats.width;
@@ -3024,7 +3082,15 @@ begin
   try
     hexview.address:=getaddress(newaddress);
   except
-    hexview.address:=symhandler.getAddressFromName(newaddress);
+    try
+      hexview.address:=symhandler.getAddressFromName(newaddress);
+    except
+      on e: exception do
+      begin
+        MessageDlg(e.message, mtError,[mbok],0);
+        exit;
+      end
+    end;
   end;
 
   if old<>hexview.address then
@@ -3157,12 +3223,31 @@ begin
 end;
 
 procedure TMemoryBrowser.hexviewKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+var a: qword;
+  psize: integer;
+  gotoaddress: qword;
+  x: ptruint;
 begin
   if shift=[ssCtrl] then
   begin
     case key of
       vk_space: //ctrl+space
       begin
+        if hexview.HasSelection then
+        begin
+          psize:=1+hexview.SelectionStop-hexview.selectionstart;
+          if psize>=4 then
+          begin
+            key:=0;
+            if psize>8 then psize:=8;
+
+            if ReadProcessMemory(processhandle, pointer(hexview.SelectionStart), @gotoaddress, processhandler.pointersize,x) then
+              disassemblerview.SelectedAddress:=gotoaddress;
+
+            exit;
+          end;
+        end;
+
         disassemblerview.SelectedAddress:=memoryaddress;
         key:=0;
       end;
@@ -3327,15 +3412,11 @@ begin
     exit;
 
   try
-    oldAddress:=disassemblerview.SelectedAddress;
     try
       disassemblerview.SelectedAddress:=symhandler.getaddressfromname(newaddress);
     except
       disassemblerview.SelectedAddress:=getaddress(newaddress);
     end;
-
-    backlist.Push(pointer(oldAddress));
-
   except
     on e:exception do
       MessageDlg(e.Message,mtError,[mbok],0);
@@ -3508,7 +3589,7 @@ begin
 end;
 
 procedure TMemoryBrowser.AssemblePopup(x:string);
-var assemblercode,desc: string;
+var assemblercode,desc,s: string;
     totalbytes: TAssemblerBytes;
     bytes: tassemblerbytes;
     a,b,original,written:ptrUint;
@@ -3531,6 +3612,11 @@ var assemblercode,desc: string;
     address: ptruint;
 
     oldbp: PBreakpoint=nil;
+
+    {$ifdef ONEBYTEJUMPS}
+    isjmp1: boolean;
+    jmp1target: ptruint;
+    {$endif}
 begin
 
   //make sure it doesnt have a breakpoint
@@ -3586,103 +3672,127 @@ begin
         exit;
       end;
 
-      try
-        if Assemble(assemblercode,Address,bytes) then
+
+      {$ifdef ONEBYTEJUMPS}
+      s:=lowercase(trim(assemblercode));
+      if s.StartsWith('jmp1 ') then
+      begin
+        isjmp1:=true;
+        s:=copy(s,6);
+
+        jmp1target:=symhandler.getAddressFromName(s);
+
+        //still here, so the address is valid
+        assemblercode:='db cc';
+      end
+      else
+        isjmp1:=false;
+      {$endif}
+
+
+      if Assemble(assemblercode,Address,bytes) then
+      begin
+        if originalsize<>length(bytes) then
         begin
-          if originalsize<>length(bytes) then
+          if formsettings.replacewithnops.checked then
           begin
-            if formsettings.replacewithnops.checked then
+            if formsettings.askforreplacewithnops.checked then
             begin
-              if formsettings.askforreplacewithnops.checked then
+              c:=messagedlg(Format(rsTheGeneratedCodeIsByteSLongButTheSelectedOpcodeIsB, [IntToStr(length(bytes)), IntToStr(originalsize)]), mtConfirmation, mbYesNoCancel, 0);
+              replace:=c=mryes;
+              if c=mrCancel then exit;
+            end else replace:=true;
+
+            if replace then
+            begin
+              while originalsize>length(bytes) do
               begin
-                c:=messagedlg(Format(rsTheGeneratedCodeIsByteSLongButTheSelectedOpcodeIsB, [IntToStr(length(bytes)), IntToStr(originalsize)]), mtConfirmation, mbYesNoCancel, 0);
-                replace:=c=mryes;
-                if c=mrCancel then exit;
-              end else replace:=true;
-
-              if replace then
-              begin
-                while originalsize>length(bytes) do
-                begin
-                  setlength(bytes,length(bytes)+1);
-                  bytes[length(bytes)-1]:=$90;
-                end;
-
-                a:=Address+length(bytes);
-
-                b:=Address;
-                while b<a do disassemble(b,desc);
-
-                a:=b-Address;
-                while length(bytes)<a do
-                begin
-                  setlength(bytes,length(bytes)+1);
-                  bytes[length(bytes)-1]:=$90;
-                end;
+                setlength(bytes,length(bytes)+1);
+                bytes[length(bytes)-1]:=$90;
               end;
 
+              a:=Address+length(bytes);
 
+              b:=Address;
+              while b<a do disassemble(b,desc);
+
+              a:=b-Address;
+              while length(bytes)<a do
+              begin
+                setlength(bytes,length(bytes)+1);
+                bytes[length(bytes)-1]:=$90;
+              end;
             end;
+
+
           end;
+        end;
 
-          //note to self, check the size of the current opcode and give the option to replace the missing or too many bytes with nops
-          //and put in a option to disable showing that message, and use a default action
+        {$ifdef ONEBYTEJUMPS}
+        if isjmp1 then
+        begin
+          InitializeAutoAssemblerExceptionHandler;
+          AutoAssemblerExceptionHandlerAddChangeRIPEntry(address, jmp1target);
 
-          // get old security and set new security   (not needed in win9x but nt doesnt even allow writeprocessmemory to do this
-          original:=0;
+          AutoAssemblerExceptionHandlerApplyChanges;
+        end;
+        {$endif}
+        //note to self, check the size of the current opcode and give the option to replace the missing or too many bytes with nops
+        //and put in a option to disable showing that message, and use a default action
 
-          bytelength:=length(bytes);
+        // get old security and set new security   (not needed in win9x but nt doesnt even allow writeprocessmemory to do this
+        original:=0;
 
-          if oldbp<>nil then
-            debuggerthread.UnsetBreakpoint(oldbp);
+        bytelength:=length(bytes);
 
-          a:=0;
-          if fcr3=0 then
-          begin
-            if SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx then
-              vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,  pointer(Address),bytelength,PAGE_EXECUTE_READWRITE,p)
-            else
-            begin
-              outputdebugstring('First making memory writable');
-              if processid<>GetCurrentProcessId then
-                ntsuspendProcess(processhandle);
-              vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,  pointer(Address),bytelength,PAGE_READWRITE,p)
-            end;
-            WriteProcessMemoryWithCloakSupport(processhandle,pointer(Address),@bytes[0],bytelength,a);
+        if oldbp<>nil then
+          debuggerthread.UnsetBreakpoint(oldbp);
 
-            if vpe then
-            begin
-              VirtualProtectEx(processhandle,pointer(Address),bytelength,p,p);
-              outputdebugstring('restoring back to the original protection: '+p.ToString);
-            end;
-
-            if (not (SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx)) and (processid<>GetCurrentProcessId) then
-              ntresumeProcess(processhandle);
-          end
+        a:=0;
+        if fcr3=0 then
+        begin
+          if SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx then
+            vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,  pointer(Address),bytelength,PAGE_EXECUTE_READWRITE,p)
           else
           begin
-            {$ifdef windows}
-            WriteProcessMemoryCR3(fcr3, pointer(address),@bytes[0], bytelength,a);
-            {$endif}
+            outputdebugstring('First making memory writable');
+            if processid<>GetCurrentProcessId then
+              ntsuspendProcess(processhandle);
+            vpe:=(SkipVirtualProtectEx=false) and VirtualProtectEx(processhandle,  pointer(Address),bytelength,PAGE_READWRITE,p)
           end;
+          WriteProcessMemoryWithCloakSupport(processhandle,pointer(Address),@bytes[0],bytelength,a);
 
-          if (a>0) and (oldbp<>nil) then
+          if vpe then
           begin
-            oldbp^.originalbyte:=bytes[0];
-            debuggerthread.SetBreakpoint(oldbp);
+            VirtualProtectEx(processhandle,pointer(Address),bytelength,p,p);
+            outputdebugstring('restoring back to the original protection: '+p.ToString);
           end;
 
-          hexview.update;
-          disassemblerview.Update;
-
-          {$ifdef darwin}
-          SetFocus;
-          disassemblerview.SetFocus;
+          if (not (SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx)) and (processid<>GetCurrentProcessId) then
+            ntresumeProcess(processhandle);
+        end
+        else
+        begin
+          {$ifdef windows}
+          WriteProcessMemoryCR3(fcr3, pointer(address),@bytes[0], bytelength,a);
           {$endif}
-        end else raise exception.create(Format(rsIDonTUnderstandWhatYouMeanWith, [assemblercode]));
-      except
-        raise exception.create(Format(rsIDonTUnderstandWhatYouMeanWith, [assemblercode]));
-      end;
+        end;
+
+        if (a>0) and (oldbp<>nil) then
+        begin
+          oldbp^.originalbyte:=bytes[0];
+          debuggerthread.SetBreakpoint(oldbp);
+        end;
+
+        hexview.update;
+        disassemblerview.Update;
+
+        {$ifdef darwin}
+        SetFocus;
+        disassemblerview.SetFocus;
+        {$endif}
+      end else raise exception.create(Format(rsIDonTUnderstandWhatYouMeanWith, [assemblercode]));
+
 
     end;
 
@@ -4079,9 +4189,14 @@ begin
     functionname:='';
     {$endif}
 
-    InjectDll(dll,functionname);
-    symhandler.reinitialize(true);
-    showmessage(rsDLLInjected);
+    try
+      InjectDll(dll,functionname);
+      symhandler.reinitialize(true);
+      showmessage(rsDLLInjected);
+    except
+      on e:exception do
+        MessageDlg(e.message,mtError,[mbok],0);
+    end;
   end;
 
 end;
@@ -4282,10 +4397,7 @@ begin
       raise exception.Create(rsErrorAllocatingMemory);
 
     if messagedlg(Format(rsAtLeastBytesHaveBeenAllocatedAtGoThereNow, [IntToStr(memsize), IntToHex(ptrUint(baseaddress), 8)]), mtinformation, [mbyes, mbno], 0) = mryes then
-    begin
-      backlist.Push(pointer(disassemblerview.SelectedAddress));
       disassemblerview.SelectedAddress:=ptrUint(baseaddress);
-    end;
   end;
   {$endif}
   {$endif}
@@ -4469,7 +4581,7 @@ begin
   Findoutwhataddressesthisinstructionaccesses1.enabled:=processhandle<>0;
 
   follow1.visible:=isjumporcall(disassemblerview.SelectedAddress,x);
-  back1.Visible:=backlist.Count>0;
+  back1.Visible:=disassemblerview.hasbacklist;
 
   pluginhandler.handledisassemblerContextPopup(disassemblerview.SelectedAddress);
 
@@ -4716,10 +4828,7 @@ will change the selected disassembler address to the address this instructions j
 var address: ptrUint;
 begin
   if isjumporcall(disassemblerview.SelectedAddress,address) then
-  begin
-    backlist.Push(pointer(disassemblerview.SelectedAddress));
     disassemblerview.SelectedAddress:=address;
-  end;
 end;
 
 
@@ -4862,15 +4971,10 @@ begin
 
 end;
 
-procedure TMemoryBrowser.AddToDisassemblerBackList(address: pointer);
-begin
-  backlist.Push(address);
-end;
 
 procedure TMemoryBrowser.Back1Click(Sender: TObject);
 begin
-  if backlist.Count>0 then
-    disassemblerview.SelectedAddress:=ptrUint(backlist.pop);
+  disassemblerview.GoBack;
 end;
 
 procedure TMemoryBrowser.Showvaluesofstaticaddresses1Click(
@@ -5028,7 +5132,7 @@ begin
   frmFloatingPointPanel.Top:=self.top+(self.ClientOrigin.y-self.top)-(frmFloatingPointPanel.ClientOrigin.y-frmFloatingPointPanel.top);
   frmFloatingPointPanel.ClientHeight:=scrollbox1.Height;
 
-  frmFloatingPointPanel.SetContextPointer(context);
+  frmFloatingPointPanel.SetContextPointer(debuggerthread.CurrentThread.context);
 
   frmFloatingPointPanel.show;//pop to foreground
 end;
@@ -5087,6 +5191,12 @@ begin
   else
     disassemblerview.ShowJumplineState:=jlsAll;
 
+end;
+
+procedure TMemoryBrowser.View1Click(Sender: TObject);
+begin
+  miIPTLog.visible:=systemSupportsIntelPT and not hideiptcapability;
+  miIPTLog.enabled:=debuggerthread<>nil;
 end;
 
 procedure TMemoryBrowser.Watchmemoryallocations1Click(Sender: TObject);
@@ -5453,7 +5563,13 @@ begin
           begin
             offset:=a-PCONTEXT(context)^.{$ifdef cpu64}rbp{$else}Ebp{$endif};
             refname:=pref+'bp';
+          end
+          else
+          begin
+            offset:=a-StackReference;
+            refname:=' ';
           end;
+
         end;
 
         if offset<0 then
@@ -5528,10 +5644,7 @@ begin
   if stacktrace2.checked then
   begin
     //go to the selected address
-    {x:=symhandler.getAddressFromName(pointed.Caption,false,haserror);
-    if not haserror then
-      disassemblerview.SelectedAddress:=x;  }
-    backlist.Push(pointer(disassemblerview.SelectedAddress));
+
     disassemblerview.SelectedAddress:=ptruint(pointed.Data);
   end
   else
@@ -5570,7 +5683,6 @@ begin
       ksh:=GetKeyShiftState;
       if ssShift in ksh then
       begin
-        backlist.Push(pointer(disassemblerview.SelectedAddress));
         disassemblerview.SelectedAddress:=x
       end
       else
@@ -5582,7 +5694,6 @@ begin
       else
       if isExecutableAddress(x) then
       begin
-        backlist.Push(pointer(disassemblerview.SelectedAddress));
         disassemblerview.SelectedAddress:=x
       end
       else
@@ -5690,6 +5801,9 @@ var temp: string='';
     gprlist, flaglist, speciallist: PContextElementRegisterList;
 
     cer: PContextElement_register;
+
+    iptlog: pointer;
+    iptlogsize: integer;
 begin
   if _debuggerthread<>nil then debuggerthread.execlocation:=41301;
 
@@ -5847,6 +5961,9 @@ begin
 
   if _debuggerthread<>nil then _debuggerthread.execlocation:=41305;
   miRunUnhandled.Visible:=miRunUnhandled.Enabled;
+  tbRunUnhandled.enabled:=miRunUnhandled.enabled;
+  tbRunUnhandled.visible:=miRunUnhandled.enabled;
+
   miDebugStep.Enabled:=true;
   tbStepInto.Enabled:=true; //enable toolbar step into button
   miDebugStepOver.Enabled:=true;
@@ -5876,7 +5993,9 @@ begin
   end;
 
   if changeselection then
+  begin
     disassemblerview.SelectedAddress:=contexthandler.InstructionPointerRegister^.getValue(context);
+  end;
 
 
   //apply the values
@@ -5995,6 +6114,14 @@ begin
   if _debuggerthread<>nil then _debuggerthread.execlocation:=41313;
 
 
+  {$IFDEF WINDOWS}
+  if (debuggerthread<>nil) and debuggerthread.usingIPT and (frmiptlog<>nil) and (frmiptlog.visible) and (debuggerthread.CurrentThread<>nil) then
+  begin
+    debuggerthread.CurrentThread.getLastIPTLog(iptlog,iptlogsize);
+    frmiptlog.loadlog('',iptlog, iptlogsize);
+    freemem(iptlog);
+  end;
+  {$ENDIF}
 
 
   registerview.OnResize(registerview);

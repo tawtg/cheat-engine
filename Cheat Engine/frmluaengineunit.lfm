@@ -83,7 +83,7 @@ object frmLuaEngine: TfrmLuaEngine
         Style = tbsDivider
       end
       object tbStopDebug: TToolButton
-        Left = 52
+        Left = 51
         Hint = 'Stop'
         Top = 2
         Caption = 'tbStopDebug'

@@ -46,8 +46,8 @@ type TDebugBreakProcess = function(processhandle:THandle):boolean; stdcall;
 type TDebugActiveProcessStop= function(pid: dword):boolean; stdcall;
 type TDebugSetProcessKillOnExit=function(KillOnExit: boolean):boolean; stdcall;
 type TIsDebuggerPresent=function:boolean; stdcall;
-type TntSuspendProcess=function(ProcessID:Dword):DWORD; stdcall;
-type TntResumeProcess=function(ProcessID:Dword):DWORD; stdcall;
+type TntSuspendProcess=function(ProcessID:HANDLE):DWORD; stdcall;
+type TntResumeProcess=function(ProcessID:HANDLE):DWORD; stdcall;
 
 
 
@@ -209,10 +209,22 @@ var mes: string;
     i: integer;
 begin
   result:=false;
-  if processid=GetCurrentProcessId then raise exception.create(rsPleaseTargetAnotherProcess);
+  if processid=GetCurrentProcessId then
+  begin
+    if MainThreadID=GetCurrentThreadId then
+      MessageDlg(rsPleaseTargetAnotherProcess,mtError,[mbOK],0);
+
+    exit(false);
+  end;
 
 
-  if processhandle=0 then raise exception.create(rsYouMustFirstOpenAProcess);
+  if processhandle=0 then
+  begin
+    if MainThreadID=GetCurrentThreadId then
+      MessageDlg(rsYouMustFirstOpenAProcess,mtError,[mbOK],0);
+
+    exit(false);
+  end;
 
   if (debuggerthread=nil) then
   begin
@@ -236,7 +248,7 @@ begin
       try
         Debuggerthread:=TDebuggerThread.MyCreate2(processid);
       except
-        raise exception.Create(rsDebugError);
+        raise EDebuggerAttachException.Create(rsDebugError);
       end;
 
       result:=true;

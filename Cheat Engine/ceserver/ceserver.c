@@ -5,6 +5,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -22,6 +23,12 @@
 #include <errno.h>
 #include <dlfcn.h>
 
+#include <sys/mman.h>
+#include <libgen.h>
+#include <dirent.h>
+#include <fcntl.h>
+
+
 
 
 
@@ -32,18 +39,54 @@
 #include "symbols.h"
 #include "extensionfunctions.h"
 #include "native-api.h"
+#include "extensionloader.h"
+#include "options.h"
+
 pthread_t pth;
 pthread_t identifierthread;
 volatile int done;
 int PORT;
+
+int ALLOC_WITHOUT_EXTENSION=0; //in case extension loading fails
 
 __thread int isDebuggerThread; //0 when not, else it contains the processhandle
 __thread int debugfd;
 
 __thread char* threadname;
 
-#define CESERVERVERSION 4
-char versionstring[]="CHEATENGINE Network 2.2";
+#define CESERVERVERSION 6 //6 because modulelist got changed
+
+
+char versionstring[]="CHEATENGINE Network 2.3";
+char *CESERVERPATH;
+
+volatile int connections=0;
+pthread_mutex_t connectionsCS;
+
+
+void initCESERVERPATH()
+{
+  int l;
+  CESERVERPATH=malloc(512);
+  CESERVERPATH[0]=0;
+
+  l=readlink("/proc/self/exe", CESERVERPATH, 256);
+
+  //basename and basedir bahave different in android, so just do this:
+  while (l)
+  {
+    if (CESERVERPATH[l]=='/')
+      return;
+    else
+    {
+      CESERVERPATH[l]=0;
+      l--;
+    }
+
+
+  }
+  strcpy(CESERVERPATH,"./");
+}
 
 ssize_t recvall (int s, void *buf, size_t size, int flags)
 {
@@ -112,7 +155,7 @@ ssize_t sendall (int s, void *buf, size_t size, int flags)
         i=0;
       else
       {
-        debug_log("Error during sendall: %d. errno=%d\n",(int)i, errno);
+        debug_log("Error during sendall: %d. error=%s\n",(int)i, strerror(errno));
         return i;
       }
     }
@@ -122,6 +165,48 @@ ssize_t sendall (int s, void *buf, size_t size, int flags)
   }
 
   return totalsent;
+}
+
+ssize_t sendstring16(int s, char *str, int flags)
+{
+  uint16_t l;
+  if (str)
+    l=strlen(str);
+  else
+    l=0;
+
+  sendall(s, &l,sizeof(l),l?MSG_MORE:flags);
+  if (l)
+    sendall(s, str, l,flags);
+
+  return l;
+}
+
+int sendinteger(int s, int val, int flags)
+{
+  return sendall(s, &val,sizeof(val),flags);
+}
+
+
+char* receivestring16(int s)
+/* Receives a string that is preceded by a 16 bit length identifier (Allocates a string. Clean it up yourself)
+ * returns NULL if the length is 0 bytes
+ */
+
+{
+  char *str;
+  uint16_t l;
+  recvall(s, &l, sizeof(l),0);
+
+  if (l)
+  {
+    str=malloc(l+1);
+    recvall(s, str, l,0);
+    str[l]=0;
+    return str;
+  }
+  else
+    return NULL;
 }
 
 
@@ -137,11 +222,20 @@ int DispatchCommand(int currentsocket, unsigned char command)
       //debug_log("version request");
       fflush(stdout);
       int versionsize=strlen(versionstring);
+#ifdef SHARED_LIBRARY
+      versionsize+=3;
+#endif
       v=(PCeVersion)malloc(sizeof(CeVersion)+versionsize);
       v->stringsize=versionsize;
       v->version=CESERVERVERSION;
 
+#ifdef SHARED_LIBRARY
+      memcpy((char *)v+sizeof(CeVersion),"lib",3);//tell ce it's the lib version
+      memcpy((char *)v+sizeof(CeVersion)+3, versionstring, versionsize);
+
+#else
       memcpy((char *)v+sizeof(CeVersion), versionstring, versionsize);
+#endif
 
       //version request
       sendall(currentsocket, v, sizeof(CeVersion)+versionsize, 0);
@@ -223,7 +317,7 @@ int DispatchCommand(int currentsocket, unsigned char command)
       fflush(stdout);
       close(currentsocket);
 
-      return NULL;
+      return 0;
     }
 
     case CMD_TERMINATESERVER:
@@ -475,7 +569,7 @@ case CMD_SETTHREADCONTEXT:
     case CMD_CREATETOOLHELP32SNAPSHOTEX:
     {
       CeCreateToolhelp32Snapshot params;
-      debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX\n");
+      //debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX\n");
 
       if (recvall(currentsocket, &params, sizeof(CeCreateToolhelp32Snapshot), MSG_WAITALL) > 0)
       {
@@ -488,12 +582,6 @@ case CMD_SETTHREADCONTEXT:
           if (r)
           {
             PThreadList tl=(PThreadList)GetPointerFromHandle(r);
-
-            debug_log("threadCount=%d\n", tl->threadCount);
-            int i;
-            for (i=0; i<tl->threadCount; i++)
-              debug_log("%d=%d\n", i, tl->threadList[i]);
-
             sendall(currentsocket, &tl->threadCount, sizeof(int), MSG_MORE);
             sendall(currentsocket, &tl->threadList[0], tl->threadCount*sizeof(int),0);
 
@@ -513,7 +601,7 @@ case CMD_SETTHREADCONTEXT:
           char *outputstream;
           int pos=0;
 
-          debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX with TH32CS_SNAPMODULE\n");
+         // debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX with TH32CS_SNAPMODULE\n");
 
           outputstream=malloc(65536);
           memset(outputstream,0,65536);
@@ -527,7 +615,7 @@ case CMD_SETTHREADCONTEXT:
             if ((pos+sizeof(CeModuleEntry)+namelen) > 65536)
             {
               //flush the stream
-              debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX: ModuleList flush in loop\n");
+             // debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX: ModuleList flush in loop\n");
               sendall(currentsocket, outputstream, pos, 0);
               pos=0;
             }
@@ -535,6 +623,7 @@ case CMD_SETTHREADCONTEXT:
             m=(PCeModuleEntry)&outputstream[pos];
             m->modulebase=me.baseAddress;
             m->modulesize=me.moduleSize;
+            m->modulefileoffset=me.fileOffset;
             m->modulenamesize=namelen;
             m->modulepart=me.part;
             m->result=1;
@@ -549,12 +638,12 @@ case CMD_SETTHREADCONTEXT:
 
           if (pos) //flush the stream
           {
-            debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX: ModuleList flush after loop\n");
+           // debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX: ModuleList flush after loop\n");
             sendall(currentsocket, outputstream, pos, 0);
           }
 
           //send the end of list module
-          debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX: ModuleList end of list\n");
+         // debug_log("CMD_CREATETOOLHELP32SNAPSHOTEX: ModuleList end of list\n");
 
           CeModuleEntry eol;
           eol.result=0;
@@ -638,6 +727,7 @@ case CMD_SETTHREADCONTEXT:
           r->modulebase=me.baseAddress;
           r->modulesize=me.moduleSize;
           r->modulenamesize=strlen(me.moduleName);
+          r->modulefileoffset=me.fileOffset;
           r->modulepart=me.part;
 
 
@@ -893,7 +983,6 @@ case CMD_SETTHREADCONTEXT:
     case CMD_VIRTUALQUERYEXFULL:
     {
       CeVirtualQueryExFullInput c;
-      CeVirtualQueryExFullOutput o;
 
       r=recvall(currentsocket, &c, sizeof(c), MSG_WAITALL);
       if (r>0)
@@ -983,7 +1072,7 @@ case CMD_SETTHREADCONTEXT:
         debug_log("Error\n");
         fflush(stdout);
         close(currentsocket);
-        return NULL;
+        return 0;
       }
       break;
     }
@@ -992,38 +1081,45 @@ case CMD_SETTHREADCONTEXT:
     {
       //get the list and send it to the client
       //zip it first
-      uint32_t symbolpathsize;
+      struct {
+        uint32_t fileoffset;
+        uint32_t symbolpathsize;
+      } input;
 
-      //debug_log("CMD_GETSYMBOLLISTFROMFILE\n");
-
-      if (recvall(currentsocket, &symbolpathsize, sizeof(symbolpathsize), MSG_WAITALL)>0)
+      if (recvall(currentsocket, &input, sizeof(input), MSG_WAITALL)>0)
       {
-        char *symbolpath=(char *)malloc(symbolpathsize+1);
-        symbolpath[symbolpathsize]='\0';
+        if (input.fileoffset)
+          debug_log("CMD_GETSYMBOLLISTFROMFILE with fileoffset=%x\n",input.fileoffset);
 
-        if (recvall(currentsocket, symbolpath, symbolpathsize, MSG_WAITALL)>0)
+        char *symbolpath=(char *)malloc(input.symbolpathsize+1);
+        symbolpath[input.symbolpathsize]='\0';
+
+        if (recvall(currentsocket, symbolpath, input.symbolpathsize, MSG_WAITALL)>0)
         {
           unsigned char *output=NULL;
-          int outputsize;
 
-          //debug_log("symbolpath=%s\n", symbolpath);
+          if (input.fileoffset)
+            debug_log("symbolpath=%s\n", symbolpath);
 
           if (memcmp("/dev/", symbolpath, 5)!=0) //don't even bother if it's a /dev/ file
-            GetSymbolListFromFile(symbolpath, &output);
+            GetSymbolListFromFile(symbolpath, input.fileoffset, &output);
 
           if (output)
           {
-            //debug_log("output is not NULL (%p)\n", output);
-
-            fflush(stdout);
-
-            //debug_log("Sending %d bytes\n", *(uint32_t *)&output[4]);
+            if (input.fileoffset)
+            {
+              debug_log("output is not NULL (%p)\n", output);
+              debug_log("Sending %d bytes\n", *(uint32_t *)&output[4]);
+              fflush(stdout);
+            }
             sendall(currentsocket, output, *(uint32_t *)&output[4], 0); //the output buffer contains the size itself
             free(output);
           }
           else
           {
-           // debug_log("Sending 8 bytes (fail)\n");
+            if (input.fileoffset)
+              debug_log("Sending 8 bytes (fail)\n");
+
             uint64_t fail=0;
             sendall(currentsocket, &fail, sizeof(fail), 0); //just write 0
           }
@@ -1060,11 +1156,25 @@ case CMD_SETTHREADCONTEXT:
       debug_log("CESERVER: CMD_ALLOC\n");
       if (recvall(currentsocket, &c, sizeof(c),0)>0)
       {
+        uint64_t address;
         debug_log("c.hProcess=%d\n", c.hProcess);
         debug_log("c.preferedBase=%llx\n", c.preferedBase);
         debug_log("c.size=%d\n", c.size);
+        debug_log("c.windowsprotection=%x\n", c.windowsprotection);
 
-        uint64_t address=ext_alloc(c.hProcess, c.preferedBase, c.size);
+        if (ALLOC_WITHOUT_EXTENSION)
+        {
+          debug_log("ALLOC_WITHOUT_EXTENSION==1\n");
+          fflush(stdout);
+          address=allocWithoutExtension(c.hProcess, (void*)c.preferedBase, c.size, windowsProtectionToLinux(c.windowsprotection));
+        }
+        else
+        {
+          debug_log("ALLOC_WITHOUT_EXTENSION==0\n");
+          fflush(stdout);
+
+          address=ext_alloc(c.hProcess, c.preferedBase, c.size, windowsProtectionToLinux(c.windowsprotection));
+        }
 
         sendall(currentsocket, &address, sizeof(address),0);
       }
@@ -1114,6 +1224,30 @@ case CMD_SETTHREADCONTEXT:
       break;
     }
 
+    case CMD_LOADMODULEEX:
+    {
+      CeLoadModuleInputEx c;
+
+      debug_log("CESERVER: CMD_LOADMODULEEX\n");
+      if (recvall(currentsocket, &c, sizeof(c),0)>0)
+      {
+        char modulepath[c.modulepathlength+1];
+
+        if (recvall(currentsocket, &modulepath, c.modulepathlength,0)>0)
+        {
+          uint64_t result;
+          modulepath[c.modulepathlength]=0;
+
+          result=ext_loadModuleEx(c.hProcess, c.dlopenaddress, modulepath);
+
+
+
+          sendall(currentsocket, &result, sizeof(result),0);
+        }
+      }
+      break;
+    }
+
     case CMD_LOADMODULE:
     {
       CeLoadModuleInput c;
@@ -1125,10 +1259,13 @@ case CMD_SETTHREADCONTEXT:
 
         if (recvall(currentsocket, &modulepath, c.modulepathlength,0)>0)
         {
-          uint32_t result;
+          uint64_t result;
           modulepath[c.modulepathlength]=0;
 
           result=ext_loadModule(c.hProcess, modulepath);
+
+
+          debug_log("ext_loadModule returned %llx\n", result);
 
           sendall(currentsocket, &result, sizeof(result),0);
         }
@@ -1151,6 +1288,348 @@ case CMD_SETTHREADCONTEXT:
       break;
     }
 
+    case CMD_CHANGEMEMORYPROTECTION:
+    {
+      CeChangeMemoryProtection c;
+      debug_log("CESERVER: CMD_CHANGEMEMORYPROTECTION \n");
+      if (recvall(currentsocket, &c, sizeof(c),0)>0)
+      {
+        RegionInfo ri;
+        uint32_t r;
+        uint32_t oldprotection;
+        uint32_t newprotection;
+
+        if (VirtualQueryEx(c.hProcess, (void*)c.address, &ri, NULL))
+        {
+          oldprotection=ri.protection;
+
+
+          //convert the given protection to a linux protection
+          newprotection=windowsProtectionToLinux(c.windowsprotection);
+
+
+          r=ext_changememoryprotection(c.hProcess, c.address, c.size, newprotection);
+        }
+        else
+          debug_log("Failure getting the old protection");
+
+        sendall(currentsocket, &r, sizeof(r),MSG_MORE);
+        sendall(currentsocket, &oldprotection, sizeof(oldprotection),0);
+      }
+
+      break;
+    }
+
+    case CMD_GETOPTIONS:
+    {
+      handleGetOptions(currentsocket);
+      break;
+    }
+
+    case CMD_GETOPTIONVALUE:
+    {
+      handleGetOption(currentsocket);
+      break;
+    }
+
+    case CMD_SETOPTIONVALUE:
+    {
+      handleSetOption(currentsocket);
+      break;
+    }
+
+    case CMD_OPENNAMEDPIPE:
+    {
+      HANDLE pipehandle=0;
+      uint32_t timeout;
+      debug_log("CMD_OPENNAMEDPIPE\n");
+      char *pipename=receivestring16(currentsocket);
+      recvall(currentsocket, &timeout, sizeof(timeout),0);
+      if (pipename)
+      {
+        debug_log("pipename=%s\n", pipename);
+        pipehandle=OpenPipe(pipename, timeout);
+        free(pipename);
+      }
+
+      debug_log("sending pipehandle %d to caller\n",pipehandle);
+
+      sendall(currentsocket, &pipehandle, sizeof(HANDLE),0 );
+      break;
+    }
+
+    case CMD_PIPEREAD:
+    {
+      CeReadPipe c;
+      int32_t count=0;
+      recvall(currentsocket, &c, sizeof(c),0);
+
+      debug_log("CMD_PIPEREAD: %d bytes\n",c.size);
+      if (c.size)
+      {
+        void *buf=malloc(c.size);
+        count=ReadPipe(c.hPipe, buf, c.size, c.timeout);
+
+        sendall(currentsocket, &count, sizeof(count), count>0?MSG_MORE:0); //can be negative
+        if (count>0)
+          sendall(currentsocket, buf, count,0);
+      }
+      else
+        sendall(currentsocket, &count, sizeof(count), 0);
+
+
+      break;
+    }
+
+    case CMD_PIPEWRITE:
+    {
+      CeWritePipe c;
+      uint32_t count=0;
+      c.size=0;
+      recvall(currentsocket, &c, sizeof(c),0);
+
+     // debug_log("CMD_PIPEWRITE:hPipe=%d count=%d  timeout:%d\n",c.hPipe, c.size, c.timeout);
+
+      if (c.size)
+      {
+       // debug_log("valid size");
+        void *buf=malloc(c.size);
+        if (buf)
+        {
+         // debug_log("allocated memory. Calling recvall\n");
+          count=recvall(currentsocket, buf, c.size,0);
+          if (count>0)
+          {
+            //debug_log("recvall returned %d\n", count);
+            //debug_log("Sending this to the pipe\n", count);
+
+           // fflush(stdout);
+            count=WritePipe(c.hPipe,buf, count, c.timeout);
+
+            //debug_log("WritePipe returned %d\n", count);
+          }
+
+          free(buf);
+        }
+        else
+          debug_log("CMD_PIPEWRITE: failed to allocate %d bytes\n", c.size);
+      }
+
+      sendall(currentsocket, &count, sizeof(count), 0);
+      break;
+    }
+
+    case CMD_GETCESERVERPATH:
+    {
+      sendstring16(currentsocket, CESERVERPATH, 0);
+      break;
+    }
+
+    case CMD_ISANDROID:
+    {
+      unsigned char r;
+#ifdef __ANDROID__
+      r=1;
+#else
+      r=0;
+#endif
+      sendall(currentsocket, &r,sizeof(r),0);
+
+      break;
+    }
+
+    case CMD_SETCURRENTPATH:
+    {
+      char *path=receivestring16(currentsocket);
+      char r=chdir(path)==0;
+      sendall(currentsocket, &r,1,0);
+
+      free(path);
+      break;
+    }
+
+    case CMD_GETCURRENTPATH:
+    {
+      char *path=(char*)malloc(PATH_MAX);
+      char *p=getcwd(path, PATH_MAX-1);
+      sendstring16(currentsocket, p,0);
+      free(path);
+      break;
+    }
+
+    case CMD_ENUMFILES:
+    {
+      char *path=receivestring16(currentsocket);
+      DIR *d=opendir(path);
+      if (d)
+      {
+        struct dirent* dc;
+
+        while (dc=readdir(d))
+        {
+          if ((dc->d_name) && (strlen(dc->d_name)))
+          {
+            sendstring16(currentsocket, dc->d_name, MSG_MORE);
+            sendall(currentsocket, &dc->d_type,1,MSG_MORE);
+          }
+        }
+
+        closedir(d);
+      }
+      sendstring16(currentsocket, NULL,0);
+
+      free(path);
+
+
+      break;
+    }
+
+    case CMD_GETFILEPERMISSIONS:
+    {
+      char r;
+      char *path=receivestring16(currentsocket);
+      struct stat s;
+      if (lstat(path, &s)==0)
+      {
+        uint32_t mode=s.st_mode & 0xfff;
+        r=1;
+        sendall(currentsocket, &r,1,MSG_MORE);
+        sendall(currentsocket, &mode, sizeof(uint32_t),0);
+
+      }
+      else
+      {
+        r=0;
+        sendall(currentsocket, &r,1,0);
+      }
+
+      free(path);
+      break;
+    }
+
+    case CMD_SETFILEPERMISSIONS:
+    {
+      char *path=receivestring16(currentsocket);
+      uint32_t mode;
+      char r;
+      recvall(currentsocket, &mode, sizeof(mode),0);
+
+      r=chmod(path, mode)==0;
+
+
+      sendall(currentsocket, &r, 1,0);
+      free(path);
+      break;
+    }
+
+    case CMD_GETFILE:
+    {
+      char *path=receivestring16(currentsocket);
+      int f=open(path,O_RDONLY);
+
+      if (f!=-1)
+      {
+        uint32_t filesize=lseek(f,0, SEEK_END);
+
+        lseek(f,0, SEEK_SET);
+
+        if (filesize)
+        {
+          char *contents=malloc(filesize);
+          filesize=read(f, contents, filesize);
+
+          if (filesize!=0xffffffff)
+          {
+            sendall(currentsocket, &filesize, sizeof(filesize),MSG_MORE);
+            sendall(currentsocket, contents, filesize,0);
+          }
+          else
+            sendall(currentsocket, &filesize, sizeof(filesize),0); //read error
+
+          free(contents);
+        }
+        else
+          sendall(currentsocket, &filesize, sizeof(filesize),0); //filesize of 0
+      }
+      else
+      {
+        uint32_t invalid=0xffffffff;
+        sendall(currentsocket, &invalid,sizeof(uint32_t),0); //open file error
+      }
+
+      free(path);
+      break;
+    }
+
+    case CMD_PUTFILE:
+    {
+      char *path=receivestring16(currentsocket);
+      uint32_t filesize;
+      char *contents;
+      int f,r;
+      r=0;
+      recvall(currentsocket, &filesize,sizeof(filesize),0);
+
+      contents=malloc(filesize);
+      recvall(currentsocket, contents, filesize,0);
+
+      f=creat(path,0777);
+      if (f!=-1)
+      {
+        if (write(f,contents, filesize)!=-1)
+          r=1; //success
+      }
+
+
+      sendall(currentsocket, &r,1,0);
+
+      free(path);
+      free(contents);
+      break;
+    }
+
+    case CMD_CREATEDIR:
+    {
+      debug_log("CMD_CREATEDIR\n");
+      char *path=receivestring16(currentsocket);
+
+      debug_log("Creating %s\n", path);
+      int r=mkdir(path,0777)==0;
+
+      if (!r)
+      {
+        debug_log("mkdir error: %s\n", strerror(errno));
+      }
+      else
+        debug_log("success\n");
+
+
+      sendall(currentsocket, &r,1,0);
+
+      free(path);
+      break;
+    }
+
+    case CMD_DELETEFILE:
+    {
+      char *path=receivestring16(currentsocket);
+      int r=unlink(path)==0;
+
+      if (!r)
+      {
+        if (errno==EISDIR)
+        {
+          r=rmdir(path)==0;
+        }
+      }
+
+
+      sendall(currentsocket, &r,1,0);
+
+      free(path);
+      break;
+    }
+
 	case CMD_AOBSCAN:
 	{
 		CeAobScanInput c;
@@ -1160,7 +1639,7 @@ case CMD_SETTHREADCONTEXT:
 	
 			int n = c.scansize;
 			char* data = (char*)malloc(n*2);
-			uint64_t* match_addr = (int*)malloc(sizeof(uint64_t) * MAX_HIT_COUNT);
+			uint64_t* match_addr = (uint64_t*)malloc(sizeof(uint64_t) * MAX_HIT_COUNT);
 
 			if (recvall(currentsocket, data, n*2, 0)>0)
 			{
@@ -1191,6 +1670,8 @@ case CMD_SETTHREADCONTEXT:
 
 
   }
+
+  return 10000; //got to here
 }
 
 int CheckForAndDispatchCommand(int currentsocket)
@@ -1208,12 +1689,46 @@ int CheckForAndDispatchCommand(int currentsocket)
   return 0;
 }
 
+
+
+void threadStartedEvent(int socket)
+{
+  pthread_mutex_lock(&connectionsCS); //so there's no ptrace_attach busy when attaching after opening and reading memory
+  connections++;
+  pthread_mutex_unlock(&connectionsCS);
+}
+
+void threadClosedEvent(int socket)
+{
+  pthread_mutex_lock(&connectionsCS);
+  connections--;
+
+  if (connections==0)
+  {
+    debug_log("All connections gone. Closing all pipes (if any)\n");
+    CloseAllPipes();
+  }
+
+  if (connections<0)
+  {
+    debug_log("Connection counter is fucked!\n");
+    CloseAllPipes();
+
+    connections=0;
+  }
+  pthread_mutex_unlock(&connectionsCS);
+
+}
+
+
 void *newconnection(void *arg)
 {
   int s=(uintptr_t)arg;
   unsigned char command;
 
   int currentsocket=s;
+
+  threadStartedEvent(currentsocket);
 
   threadname=NULL;
   isDebuggerThread=0;
@@ -1284,7 +1799,10 @@ void *newconnection(void *arg)
     {
       debug_log("read error on socket %d (%d)\n", s, errno);
       fflush(stdout);
+
+      threadClosedEvent(currentsocket);
       close(currentsocket);
+
       return NULL;
     }
     else
@@ -1308,11 +1826,14 @@ void *newconnection(void *arg)
       else
         debug_log("Peer has disconnected\n");
       fflush(stdout);
+
+      threadClosedEvent(currentsocket);
       close(currentsocket);
       return NULL;
     }
   }
 
+  threadClosedEvent(s);
   close(s);
 
   return NULL;
@@ -1339,7 +1860,10 @@ void *IdentifierThread(void *arg)
   fflush(stdout);
 
   s=socket(PF_INET, SOCK_DGRAM, 0);
+  v=1;
   i=setsockopt(s, SOL_SOCKET, SO_BROADCAST, &v, sizeof(v));
+
+  debug_log("IdentifierThread: setting SO_BROADCAST returned %d\n", i);
 
   memset(&addr, 0, sizeof(addr));
 
@@ -1354,12 +1878,17 @@ void *IdentifierThread(void *arg)
     {
       memset(&addr_client, 0, sizeof(addr_client));
       addr_client.sin_family=PF_INET;
-      addr_client.sin_addr.s_addr=INADDR_ANY;
+      addr_client.sin_addr.s_addr=INADDR_BROADCAST;
       addr_client.sin_port=htons(3296);
 
       clisize=sizeof(addr_client);
 
+      debug_log("IdentifierThread: Calling recvfrom size %d\n",sizeof(packet));
+      fflush(stdout);
       i=recvfrom(s, &packet, sizeof(packet), 0, (struct sockaddr *)&addr_client, &clisize);
+
+      debug_log("IdentifierThread: recvfrom returned %d\n", i);
+      fflush(stdout);
 
       //i=recv(s, &v, sizeof(v), 0);
       if (i>=0)
@@ -1419,6 +1948,8 @@ int main(int argc, char *argv[])
   int b;
   int l;
   int a;
+
+  pthread_mutex_init(&connectionsCS, NULL);
 
   initAPI();
 
@@ -1503,29 +2034,19 @@ int main(int argc, char *argv[])
   debug_log("sizeof(off64_t)=%d\n",sizeof(off64_t));
   debug_log("sizeof(uintptr_t)=%d\n",sizeof(uintptr_t));
   debug_log("sizeof(long)=%d\n",sizeof(long));
-/*
-  debug_log("TARM64CONTEXT:\n");
 
-  debug_log("structsize at %p\n", &((PCONTEXT)0)->structsize);
-  debug_log("structtype at %p\n", &((PCONTEXT)0)->type);
+  debug_log("---\n");
+  initCESERVERPATH();
+  debug_log("CESERVERPATH=%s\n", CESERVERPATH);
 
-  debug_log("regs at %p\n", &((PCONTEXT)0)->regs);
-  debug_log("SP at %p\n", &((PCONTEXT)0)->regs.sp);
-  debug_log("PC at %p\n", &((PCONTEXT)0)->regs.pc);
-  debug_log("PSTATE at %p\n", &((PCONTEXT)0)->regs.pstate);
-  debug_log("fp at %p\n", &((PCONTEXT)0)->fp);
-  debug_log("vregs[0] at %p\n", &((PCONTEXT)0)->fp.vregs[0]);
-  debug_log("vregs[1] at %p\n", &((PCONTEXT)0)->fp.vregs[1]);
-  debug_log("vregs[2] at %p\n", &((PCONTEXT)0)->fp.vregs[2]);
-  debug_log("vregs[30] at %p\n", &((PCONTEXT)0)->fp.vregs[30]);
-  debug_log("vregs[31] at %p\n", &((PCONTEXT)0)->fp.vregs[31]);
-  debug_log("fpsr at %p\n", &((PCONTEXT)0)->fp.fpsr);
-  debug_log("fpcr at %p\n", &((PCONTEXT)0)->fp.fpcr);
-  debug_log("reserved[0] at %p\n", &((PCONTEXT)0)->fp.__reserved[0]);
-  debug_log("reserved[1] at %p\n", &((PCONTEXT)0)->fp.__reserved[1]);
-*/
+
+  fflush(stdout);
   debug_log("MEMORY_SEARCH_OPTION=%d\n", MEMORY_SEARCH_OPTION);
+  fflush(stdout);
   debug_log("ATTACH_TO_ACCESS_MEMORY=%d\n", ATTACH_TO_ACCESS_MEMORY);
+  fflush(stdout);
+  debug_log("ATTACH_TO_WRITE_MEMORY=%d\n", ATTACH_TO_WRITE_MEMORY);
+  fflush(stdout);
 
 
   if ((MEMORY_SEARCH_OPTION == 2) && (process_vm_readv==NULL)) //user explicitly wants to use process_vm_readv but it's not available
@@ -1533,6 +2054,8 @@ int main(int argc, char *argv[])
     debug_log("process_vm_readv==NULL, so MEMORY_SEARCH_OPTION can not be 2. Setting it to 0\n");
     MEMORY_SEARCH_OPTION=0; //fallback to 0
   }
+
+
 
   debug_log("MEMORY_SEARCH_OPTION=%d\n", MEMORY_SEARCH_OPTION);
 
@@ -1572,10 +2095,13 @@ int main(int argc, char *argv[])
     memset(&addr_client, 0, sizeof(addr_client));
 
     #ifndef SHARED_LIBRARY
+    sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
+
+
     if (TEST_MODE == 1)
     {
       debug_log("TESTMODE\n");
-      pthread_create(&pth, NULL, (void *)CESERVERTEST, TEST_PID);     
+      pthread_create(&pth, NULL, (void *)CESERVERTEST, (void*)(size_t)TEST_PID);
     }
 #ifdef traptest
 

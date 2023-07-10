@@ -30,7 +30,7 @@ uses {$ifdef darwin}macport,messages,lcltype,{$endif}
      ,cefreetype,FPCanvas, EasyLazFreeType, LazFreeTypeFontCollection, LazFreeTypeIntfDrawer,
      LazFreeTypeFPImageDrawer, IntfGraphics, fpimage, graphtype
      {$endif}
-     , betterControls;
+     , betterControls, Contnrs;
 
 
 
@@ -71,6 +71,8 @@ type TDisassemblerview=class(TPanel)
     fShowJumplines: boolean; //defines if it should draw jumplines or not
     fShowjumplineState: TShowjumplineState;
 
+    fCenterOnAddressChangeOutsideView: boolean;
+
 
    // fdissectCode: TDissectCodeThread;
 
@@ -97,6 +99,8 @@ type TDisassemblerview=class(TPanel)
 
     fUseRelativeBase: boolean;
     fRelativeBase: ptruint;
+
+
 
     procedure updateScrollbox;
     procedure scrollboxResize(Sender: TObject);
@@ -133,6 +137,8 @@ type TDisassemblerview=class(TPanel)
 
     procedure setCR3(pa: QWORD);
   protected
+    backlist: TStack;
+    goingback: boolean;
     procedure HandleSpecialKey(key: word);
     procedure WndProc(var msg: TMessage); override;
     procedure DoEnter; override;
@@ -160,6 +166,9 @@ type TDisassemblerview=class(TPanel)
     {$endif}
 
 
+
+    procedure GoBack;
+    function hasBackList: boolean;
 
     procedure DoDisassemblerViewLineOverride(address: ptruint; var addressstring: string; var bytestring: string; var opcodestring: string; var parameterstring: string; var specialstring: string);
 
@@ -205,6 +214,7 @@ type TDisassemblerview=class(TPanel)
 
     property RelativeBase: ptruint read fRelativeBase write fRelativeBase;
     property UseRelativeBase: boolean read fUseRelativeBase write fUseRelativeBase;
+    property CenterOnAddressChangeOutsideView: boolean read fCenterOnAddressChangeOutsideView write fCenterOnAddressChangeOutsideView; //if false, top
 end;
 
 
@@ -324,9 +334,17 @@ end;
 procedure TDisassemblerview.setSelectedAddress(address: ptrUint);
 var i: integer;
     found: boolean;
+
+    viewchanged: boolean;
+    count: integer;
 begin
+  if (fSelectedAddress<>0) and (fselectedAddress<>address) and (not goingback) then
+    backlist.Push(pointer(fselectedAddress));
+
   fSelectedAddress:=address;
   fSelectedAddress2:=address;
+
+  viewchanged:=false;
 
   if (fTotalvisibledisassemblerlines>1) and (InRangeX(fSelectedAddress, Tdisassemblerline(disassemblerlines[0]).address, Tdisassemblerline(disassemblerlines[fTotalvisibledisassemblerlines-2]).address)) then
   begin
@@ -344,17 +362,49 @@ begin
     begin
       fTopAddress:=address;
       fTopSubline:=0;
+      viewchanged:=true;
     end;
 
   end else
   begin
     fTopAddress:=address;
     fTopSubline:=0;
+    viewchanged:=true;
+  end;
+
+  if fCenterOnAddressChangeOutsideView and viewchanged then
+  begin
+    BeginUpdate;
+    count:=0;
+    repeat
+      fTopAddress:=fTopAddress-1;
+      update;
+      inc(count);
+    until (Tdisassemblerline(disassemblerlines[fTotalvisibledisassemblerlines div 2]).Address=address) or (Tdisassemblerline(disassemblerlines[fTotalvisibledisassemblerlines-1]).Address<address) or (count>1000);
+
+    if (Tdisassemblerline(disassemblerlines[fTotalvisibledisassemblerlines-1]).Address<address) or (count>1000) then //failed to center
+      fTopAddress:=address;
+
+    EndUpdate;
   end;
 
 
-
   update;
+end;
+
+procedure TDisassemblerview.GoBack;
+begin
+  if hasBackList then
+  begin
+    goingback:=true;
+    setSelectedAddress(ptruint(backlist.Pop));
+    goingback:=false;
+  end;
+end;
+
+function TDisassemblerview.hasBackList: boolean;
+begin
+  result:=backlist.count>0;
 end;
 
 procedure TDisassemblerview.MouseScroll(Sender: TObject; Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
@@ -1208,6 +1258,9 @@ destructor TDisassemblerview.destroy;
 begin
   destroyed:=true;
 
+  if backlist<>nil then
+    freeandnil(backlist);
+
   reinitialize;
   if disassemblerlines<>nil then
     freeandnil(disassemblerlines);
@@ -1246,6 +1299,8 @@ var
   mi: TMenuItem;
 begin
   inherited create(AOwner);
+
+  backlist:=TStack.Create;
 
   if MainThreadID=GetCurrentThreadId then
     fCurrentDisassembler:=visibleDisassembler

@@ -1123,6 +1123,8 @@ begin
         setlength(staticscanner.mustendwithoffsetlist, frmpointerscannersettings.offsetlist.count);
         for i:=0 to frmpointerscannersettings.offsetlist.count-1 do
           staticscanner.mustendwithoffsetlist[i]:=TOffsetEntry(frmpointerscannersettings.offsetlist[i]).offset;
+
+        staticscanner.mustEndWithSpecificOffsetMaxDeviation:=frmpointerscannersettings.maxOffsetDeviation;
       end;
 
       staticscanner.instantrescan:=frmpointerscannersettings.cbCompareToOtherPointermaps.checked;
@@ -1180,6 +1182,8 @@ begin
         pnlProgress.ClientHeight:=ProgressBar1.Top+progressbar1.height+1;
 
       staticscanner.onlyOneStaticInPath:=frmpointerscannersettings.cbOnlyOneStatic.checked;
+
+      staticscanner.scanPagedMemoryOnly:=frmpointerscannersettings.cbScanResidentMemory.checked;
 
       staticscanner.useHeapData:=frmpointerscannersettings.cbUseHeapData.Checked;
       staticscanner.useOnlyHeapData:=frmpointerscannersettings.cbHeapOnly.checked;

@@ -29,7 +29,8 @@ type
 
 
 
-type TTokenType=(
+type
+  TCEAATokenType=(
   ttInvalidtoken, ttRegister8Bit, ttRegister16Bit, ttRegister32Bit, ttRegister64Bit, ttRegister8BitWithPrefix, //ttRegister64Bit and ttRegister8BitWithPrefix is just internal to set the rexflags
   ttRegisterMM, ttRegisterXMM, ttRegisterYMM, ttRegisterST, ttRegisterSreg,
   ttRegisterCR, ttRegisterDR, ttMemoryLocation, ttMemoryLocation8,
@@ -367,6 +368,7 @@ const opcodes: array [1..opcodecount] of topcode =(
   (mnemonic:'CMPSD';bytes:1;bt1:$a7),
   (mnemonic:'CMPSD';opcode1:eo_reg;opcode2:eo_ib;paramtype1:par_xmm;paramtype2:par_xmm_m64;paramtype3:par_imm8;bytes:3;bt1:$f2;bt2:$0f;bt3:$c2),
   (mnemonic:'CMPSS';opcode1:eo_reg;opcode2:eo_ib;paramtype1:par_xmm;paramtype2:par_xmm_m32;paramtype3:par_imm8;bytes:3;bt1:$f3;bt2:$0f;bt3:$c2),
+
   (mnemonic:'CMPSW';bytes:2;bt1:$66;bt2:$a7),
   (mnemonic:'CMPXCHG';opcode1:eo_reg;paramtype1:par_rm8;paramtype2:par_r8;bytes:2;bt1:$0f;bt2:$b0),
   (mnemonic:'CMPXCHG';opcode1:eo_reg;paramtype1:par_rm16;paramtype2:par_r16;bytes:3;bt1:$66;bt2:$0f;bt3:$b1),
@@ -2713,10 +2715,10 @@ function Assemble(opcode:string; address: ptrUint;var bytes: TAssemblerBytes; as
 function GetOpcodesIndex(opcode: string): integer;
 
 //function tokenize(opcode:string; var tokens: ttokens): boolean;
-function gettokentype(var token:string;token2: string): TTokenType;
+function gettokentype(var token:string;token2: string): TCEAATokenType;
 function getreg(reg: string;exceptonerror:boolean): integer; overload;
 function getreg(reg: string): integer; overload;
-function TokenToRegisterbit(token:string): TTokenType;
+function TokenToRegisterbit(token:string): TCEAATokenType;
 
 
 type TSingleLineAssembler=class
@@ -2763,7 +2765,10 @@ type TSingleLineAssembler=class
 
 end;
 
-var SingleLineAssembler: TSingleLineAssembler;
+
+threadvar
+  sla: TSingleLineAssembler;
+//var SingleLineAssembler: TSingleLineAssembler;
 
 
 var parameter1,parameter2,parameter3: integer;
@@ -2787,7 +2792,7 @@ uses {$ifdef darwin}
   windows,
   {$endif}
   CEFuncProc, symbolhandler, lua, luahandler, lualib, assemblerArm, Parsers,
-  NewKernelHandler, LuaCaller, math, cpuidUnit, classes, controls;
+  NewKernelHandler, LuaCaller, math, cpuidUnit, classes, controls, StringHashList;
 {$endif}
 
 resourcestring
@@ -2800,7 +2805,7 @@ resourcestring
   rsInvalidAddress = 'Invalid address';
   rsTheAssemblerTriedToSetARegisteValueThatIsTooHigh = 'The assembler tried to set a register value that is too high';
   rsAssemblerError = 'Assembler error';
-  rsOffsetTooBig = 'offset too big';
+  rsOffsetTooBig = 'This instruction can not be assembled because the distance between the current address and addressed address is too big. Try placing the address in a register first and use that';
   rsInvalidValueFor32Bit = 'The value provided can not be encoded in a 32-bit field';
   rsInvalid64BitValueFor32BitField = 'The value %.16x can not be encoded using a 32-bit signed value. But if you meant %.16x then that''s ok and you should have provided it like that in the first place.  Is it ok to change it to this?'#13#10'(This is the only time asked and will be remembered until you restart CE)';
 
@@ -2808,6 +2813,8 @@ var
   ExtraAssemblers: array of TAssemblerEvent;
   naggedTheUserAboutWrongSignedValue: boolean;
   naggedTheUserAboutWrongSignedValueAnswer: boolean;
+
+  pseudooplist: TStringHashList;
 
 
 function registerAssembler(m: TAssemblerEvent): integer;
@@ -3056,6 +3063,7 @@ end;
 {old obsolete but still being called}
 function getreg(reg: string;exceptonerror:boolean): integer; overload;
 begin
+  reg:=uppercase(reg);
   result:=-1;
   if processhandler.SystemArchitecture=archX86 then
   begin
@@ -3088,6 +3096,7 @@ begin
           try
             exit(reg.Substring(1).ToInteger);
           except
+            if exceptonerror then raise EAssemblerException.create(rsInvalidRegister);
             exit(-1);
           end;
         end;
@@ -3105,6 +3114,7 @@ begin
           try
             exit(reg.Substring(1).ToInteger);
           except
+            if exceptonerror then raise EAssemblerException.create(rsInvalidRegister);
             exit(-1);
           end;
         end;
@@ -3130,6 +3140,8 @@ end;
 
 function TSingleLineAssembler.getreg(reg: string;exceptonerror:boolean): integer; overload;
 begin
+  reg:=uppercase(reg);
+
   result:=1000;
   if (reg='RAX') or (reg='EAX') or (reg='AX') or (reg='AL') or (reg='MM0') or (reg='XMM0') or (reg='YMM0') or (reg='ST(0)') or (reg='ST') or (reg='ES') or (reg='CR0') or (reg='DR0') then exit(0);
   if (reg='RCX') or (reg='ECX') or (reg='CX') or (reg='CL') or (reg='MM1') or (reg='XMM1') or (reg='YMM1') or (reg='ST(1)') or (reg='CS') or (reg='CR1') or (reg='DR1') then exit(1);
@@ -3165,9 +3177,10 @@ end;
 
 
 
-function TokenToRegisterbit(token:string): TTokenType;
+function TokenToRegisterbit(token:string): TCEAATokenType;
 //todo: Optimize with a case statement A->AL/AH/AX , B->BL/ .....
 begin
+  token:=uppercase(token);
   result:=ttRegister32bit;
 
   if length(token)>=2 then
@@ -3378,7 +3391,7 @@ begin
   end;
 end;
 
-function gettokentype(var token:string;token2: string): TTokenType;
+function gettokentype(var token:string;token2: string): TCEAATokenType;
 var err: integer;
     temp:string;
     i64: int64;
@@ -3395,11 +3408,14 @@ begin
   token:=StringReplace(token,'FAR ','',[rfIgnoreCase]);   
 
   temp:=ConvertHexStrToRealStr(token);
-  val(temp,i64,err);
-  if err=0 then
+  if temp<>'' then
   begin
-    result:=ttValue;
-    token:=temp;
+    val(temp,i64,err);
+    if err=0 then
+    begin
+      result:=ttValue;
+      token:=temp;
+    end;
   end;
 
 
@@ -3408,18 +3424,20 @@ begin
   //temp:=StringReplace(token,'PTR [', '[',[rfIgnoreCase]);
 
 
+
   brp:=pos('[',token);
   if brp>0 then
   begin
-    if (pos('YMMWORD',token) in [1..brp]) then result:=ttMemorylocation256 else
-    if (pos('XMMWORD',token) in [1..brp]) then result:=ttMemorylocation128 else
-    if (pos('DQWORD',token) in [1..brp]) then result:=ttMemorylocation128 else
-    if (pos('TBYTE',token) in [1..brp]) then result:=ttMemorylocation80 else
-    if (pos('TWORD',token) in [1..brp]) then result:=ttMemorylocation80 else
-    if (pos('QWORD',token) in [1..brp]) then result:=ttMemorylocation64 else
-    if (pos('DWORD',token) in [1..brp]) then result:=ttMemorylocation32 else
-    if (pos('WORD',token) in [1..brp]) then result:=ttMemorylocation16 else
-    if (pos('BYTE',token) in [1..brp]) then result:=ttMemorylocation8 else
+    temp:=uppercase(token);
+    if (pos('YMMWORD',temp) in [1..brp]) then result:=ttMemorylocation256 else
+    if (pos('XMMWORD',temp) in [1..brp]) then result:=ttMemorylocation128 else
+    if (pos('DQWORD',temp) in [1..brp]) then result:=ttMemorylocation128 else
+    if (pos('TBYTE',temp) in [1..brp]) then result:=ttMemorylocation80 else
+    if (pos('TWORD',temp) in [1..brp]) then result:=ttMemorylocation80 else
+    if (pos('QWORD',temp) in [1..brp]) then result:=ttMemorylocation64 else
+    if (pos('DWORD',temp) in [1..brp]) then result:=ttMemorylocation32 else
+    if (pos('WORD',temp) in [1..brp]) then result:=ttMemorylocation16 else
+    if (pos('BYTE',temp) in [1..brp]) then result:=ttMemorylocation8 else
       result:=ttMemorylocation;
   end;
 
@@ -3446,57 +3464,57 @@ begin
 
 end;
 
-function isrm8(parametertype:TTokenType): boolean;
+function isrm8(parametertype:TCEAATokenType): boolean;
 begin
   result:=(parametertype=ttMemorylocation8) or (parametertype=ttRegister8bit);
 end;
 
-function isrm16(parametertype:TTokenType): boolean;
+function isrm16(parametertype:TCEAATokenType): boolean;
 begin
   result:=(parametertype=ttmemorylocation16) or (parametertype=ttregister16bit);
 end;
 
-function isrm32(parametertype:TTokenType): boolean;
+function isrm32(parametertype:TCEAATokenType): boolean;
 begin
   result:=(parametertype=ttmemorylocation32) or (parametertype=ttregister32bit);
 end;
 
-function ismm_m32(parametertype:TTokenType): boolean;
+function ismm_m32(parametertype:TCEAATokenType): boolean;
 begin
   result:=(parametertype=ttRegisterMM) or (parametertype=ttMemorylocation32);
 end;
 
-function ismm_m64(parametertype:TTokenType): boolean;
+function ismm_m64(parametertype:TCEAATokenType): boolean;
 begin
   result:=(parametertype=ttRegisterMM) or (parametertype=ttMemorylocation64);
 end;
 
-function isxmm_m32(parametertype:TTokenType): boolean;
+function isxmm_m32(parametertype:TCEAATokenType): boolean;
 begin
   result:=(parametertype=ttRegisterXMM) or (parametertype=ttMemorylocation32);
 end;
 
-function isxmm_m16(parametertype:TTokenType; params: string): boolean;
+function isxmm_m16(parametertype:TCEAATokenType; params: string): boolean;
 begin
   result:=(parametertype=ttRegisterXMM) or (parametertype=ttMemorylocation16) or ((parametertype=ttmemorylocation32) and isMemoryLocationDefault(params));
 end;
 
-function isxmm_m8(parametertype:TTokenType; params: string): boolean;
+function isxmm_m8(parametertype:TCEAATokenType; params: string): boolean;
 begin
   result:=(parametertype=ttRegisterXMM) or (parametertype=ttMemorylocation8) or ((parametertype=ttmemorylocation32) and isMemoryLocationDefault(params));
 end;
 
-function isxmm_m64(parametertype:TTokenType): boolean;
+function isxmm_m64(parametertype:TCEAATokenType): boolean;
 begin
   result:=(parametertype=ttRegisterXMM) or (parametertype=ttMemorylocation64);
 end;
 
-function isxmm_m128(parametertype:TTokenType):boolean;
+function isxmm_m128(parametertype:TCEAATokenType):boolean;
 begin
   result:=(parametertype=ttRegisterXMM) or (parametertype=ttMemorylocation128);
 end;
 
-function isymm_m256(parametertype:TTokenType):boolean;
+function isymm_m256(parametertype:TCEAATokenType):boolean;
 begin
   result:=(parametertype=ttRegisterYMM) or (parametertype=ttMemorylocation256);
 end;
@@ -3504,6 +3522,7 @@ end;
 
 function isReservedToken(t: string): boolean;
 begin
+  t:=uppercase(t);
   result:=false;
   if length(t)<3 then exit(false);
 
@@ -3591,6 +3610,8 @@ var i,j,err,err2: integer;
     haserror: boolean;
     inQuote: boolean;
     quotechar: char;
+
+    split: array of string;
 begin
   if length(token)=0 then exit(false); //empty string
 
@@ -3683,18 +3704,22 @@ begin
       val('$'+tokens[i],j,err);
       if (err<>0) and (getreg(tokens[i],false)=-1) and (isReservedToken(tokens[i])=false) then    //not a hexadecimal value and not a register
       begin
+        j:=pos('*', tokens[i]);
+        if j>0 then //getreg failed, but could be it's the 'other' one
+        begin
+          split:=tokens[i].Split('*');
+          if (length(split)=2) and
+             (
+               (getreg(trim(split[0]),false)<>-1) or
+               (getreg(trim(split[1]),false)<>-1)
+             ) then continue;
+        end;
+
         temp:=inttohex(symhandler.getaddressfromname(tokens[i], true, haserror,nil),8);
         if not haserror then
           tokens[i]:=temp //can be rewritten as a hexadecimal
         else
         begin
-          j:=pos('*', tokens[i]);
-          if j>0 then //getreg failed, but could be it's the 'other' one
-          begin
-            if (length(tokens[i])>j) and (copy(tokens[i],j+1,1)[1] in ['2','4','8']) then
-              continue; //reg*2 / *3, /*4
-          end;
-
           if (i<length(tokens)-1) then
           begin
             //perhaps it can be concatenated with the next one
@@ -3825,6 +3850,8 @@ begin
       tokens[length(tokens)-1]:=copy(opcode,last,j);
 
 
+      //7.5: Removed the "everything is uppercase" assumption.  Start being case sensitive
+       {
       if (j>0) and (tokens[length(tokens)-1][1]<>'$') and ((j<7) or (pos('KERNEL_',uppercase(tokens[length(tokens)-1]))=0)) then //only uppercase if it's not kernel_
       begin
         //don't uppercase empty strings, kernel_ strings or strings starting with $
@@ -3836,11 +3863,11 @@ begin
         end
         else
           tokens[length(tokens)-1]:=uppercase(tokens[length(tokens)-1]);
-      end;
+      end; }
 
 
       //6.1: Optimized this lookup. Instead of a 18 compares a full string lookup on each token it now only compares up to 4 times
-      t:=tokens[length(tokens)-1];
+      t:=uppercase(tokens[length(tokens)-1]);
 
 
       isPartial:=false;
@@ -4001,6 +4028,7 @@ var
   hasmultiply: boolean;
   s: string;
 begin
+  reg:=uppercase(reg);
   hasmultiply:=false;
 
   for i:=1 to length(reg)-1 do
@@ -4259,6 +4287,9 @@ begin
   end;
 
   try
+    reg[k]:=uppercase(reg[k]);
+    reg[-k]:=uppercase(reg[-k]);
+
     if (reg[k]='ESP') or (reg[-k]='ESP') or (reg[k]='RSP') or (reg[-k]='RSP') then //esp takes precedence
     begin
       if reg[-k]='ESP' then k:=-k;
@@ -4555,6 +4586,9 @@ begin
   begin
     //register //modrm c0 to ff
     setmod(modrm[0],3);
+
+    param:=uppercase(param);
+    //todo: case
     if (param='RAX') or (param='EAX')  or (param='AX')   or (param='AL')   or (param='MM0') or (param='XMM0') or (param='YMM0') then setrm(modrm[0],0) else
     if (param='RCX') or (param='ECX')  or (param='CX')   or (param='CL')   or (param='MM1') or (param='XMM1') or (param='YMM1') then setrm(modrm[0],1) else
     if (param='RDX') or (param='EDX')  or (param='DX')   or (param='DL')   or (param='MM2') or (param='XMM2') or (param='YMM2') then setrm(modrm[0],2) else
@@ -4697,7 +4731,89 @@ end;
 
 function Assemble(opcode:string; address: ptrUint;var bytes: TAssemblerBytes; assemblerPreference: TassemblerPreference=apNone; skiprangecheck: boolean=false): boolean;
 begin
-  result:=SingleLineAssembler.assemble(opcode, address, bytes, assemblerPreference, skiprangecheck);
+  if sla=nil then sla:=TSingleLineAssembler.Create;
+  result:=sla.assemble(opcode, address, bytes, assemblerPreference, skiprangecheck);
+end;
+
+type
+  TPseudoOpHandler=procedure(var tokens: ttokens; mnemonic: integer; optval: integer);
+  TPseudoOpData=record
+    handler: TPseudoOpHandler;
+    optval: integer;
+  end;
+  PPseudoOpData=^TPseudoOpData;
+
+procedure pseudoOpCMPSD(var tokens: ttokens; mnemonic: integer; optval: integer);
+begin
+  setlength(tokens,length(tokens)+1);
+  tokens[length(tokens)-1]:=inttostr(optval);
+  tokens[mnemonic]:='CMPSD';
+end;
+
+procedure pseudoOpVCMPSD(var tokens: ttokens; mnemonic: integer; optval: integer);
+begin
+  setlength(tokens,length(tokens)+1);
+  tokens[length(tokens)-1]:=inttostr(optval);
+  tokens[mnemonic]:='VCMPSD';
+end;
+
+procedure pseudoOpCMPSS(var tokens: ttokens; mnemonic: integer; optval: integer);
+begin
+  setlength(tokens,length(tokens)+1);
+  tokens[length(tokens)-1]:=inttostr(optval);
+  tokens[mnemonic]:='CMPSS';
+end;
+
+procedure pseudoOpVCMPSS(var tokens: ttokens; mnemonic: integer; optval: integer);
+begin
+  setlength(tokens,length(tokens)+1);
+  tokens[length(tokens)-1]:=inttostr(optval);
+  tokens[mnemonic]:='VCMPSS';
+end;
+
+
+procedure pseudoOpCMPPD(var tokens: ttokens; mnemonic: integer; optval: integer);
+begin
+  setlength(tokens,length(tokens)+1);
+  tokens[length(tokens)-1]:=inttostr(optval);
+  tokens[mnemonic]:='CMPPD';
+end;
+
+procedure pseudoOpVCMPPD(var tokens: ttokens; mnemonic: integer; optval: integer);
+begin
+  setlength(tokens,length(tokens)+1);
+  tokens[length(tokens)-1]:=inttostr(optval);
+  tokens[mnemonic]:='VCMPPD';
+end;
+
+procedure pseudoOpCMPPS(var tokens: ttokens; mnemonic: integer; optval: integer);
+begin
+  setlength(tokens,length(tokens)+1);
+  tokens[length(tokens)-1]:=inttostr(optval);
+  tokens[mnemonic]:='CMPPS';
+end;
+
+procedure pseudoOpVCMPPS(var tokens: ttokens; mnemonic: integer; optval: integer);
+begin
+  setlength(tokens,length(tokens)+1);
+  tokens[length(tokens)-1]:=inttostr(optval);
+  tokens[mnemonic]:='VCMPPS';
+end;
+
+function handlePseudoOps(var tokens: ttokens; mnemonic: integer):boolean;
+var
+  h: PPseudoOpData;
+begin
+  h:=pseudooplist.Data[tokens[mnemonic]];
+  if h<>nil then
+  begin
+    h^.handler(tokens, mnemonic, h^.optval);
+    result:=true;
+  end
+  else
+    result:=false;
+
+
 end;
 
 function TSingleLineAssembler.Assemble(opcode:string; address: ptrUint;var bytes: TAssemblerBytes;assemblerPreference: TassemblerPreference=apNone; skiprangecheck: boolean=false): boolean;
@@ -4705,9 +4821,10 @@ var tokens: ttokens;
     i,j,k,l: integer;
     v,v2, newv: qword;
     mnemonic,nroftokens: integer;
-    oldParamtype1, oldParamtype2: TTokenType;
-    paramtype1,paramtype2,paramtype3,paramtype4: TTokenType;
+    oldParamtype1, oldParamtype2: TCEAATokenType;
+    paramtype1,paramtype2,paramtype3,paramtype4: TCEAATokenType;
     parameter1,parameter2,parameter3,parameter4: string;
+    parameter1uc, parameter2uc: string; //uppercase variant of parameter1 and 2
     vtype,v2type: integer;
     signedvtype,signedv2type: integer;
 
@@ -4715,25 +4832,58 @@ var tokens: ttokens;
 
     tempstring: string;
     tempwstring: widestring;
-    overrideShort, overrideLong, overrideFar: boolean;
+    overrideShort: boolean=false;
+    overrideLong: boolean=false;
+    overrideFar: boolean=false;
 
-    is64bit: boolean;
-
-
-    b: byte;
-    br: PTRUINT;
-    canDoAddressSwitch: boolean;
+    is64bit: boolean=false;
 
 
-    bigvex: boolean;
-    VEXvvvv: integer;
+    b: byte=0;
+    br: PTRUINT=0;
+    canDoAddressSwitch: boolean=false;
 
-    cannotencodewithrexw: boolean;
+
+    bigvex: boolean=false;
+    VEXvvvv: integer=0;
+
+    cannotencodewithrexw: boolean=false;
 
     //cpuinfo: TCPUIDResult;
 
     bts: TAssemblerBytes;
+    errorifnotfound: string;
 begin
+  errorifnotfound:='';
+  i:=0;
+  j:=0;
+  k:=0;
+  l:=0;
+  v:=0;
+  v2:=0;
+  newv:=0;
+  mnemonic:=0;
+  nroftokens:=0;
+
+  oldParamtype1:=ttInvalidtoken;
+  oldParamtype2:=ttInvalidtoken;
+  paramtype1:=ttInvalidtoken;
+  paramtype2:=ttInvalidtoken;
+  paramtype3:=ttInvalidtoken;
+  paramtype4:=ttInvalidtoken;
+  parameter1:='';
+  parameter2:='';
+  parameter3:='';
+  parameter4:='';
+
+  vtype:=0;
+  v2type:=0;
+  signedvtype:=0;
+  signedv2type:=0;
+
+
+  setlength(bts,0);
+
   faddress:=address;
   VEXvvvv:=$f;
   needsAddressSwitchPrefix:=false;
@@ -4741,6 +4891,7 @@ begin
 
   setlength(bytes,0);
   is64bit:=processhandler.is64Bit;
+
 
 
   {$ifdef checkassembleralphabet}
@@ -4753,6 +4904,12 @@ begin
 
   relativeAddressLocation:=-1;
   rexprefix:=0;
+  RexPrefixLocation:=0;
+  actualdisplacement:=0;
+  needsAddressSwitchPrefix:=false;
+  usesVexSIB:=false;
+
+
   result:=false;
 
   tokenize(opcode,tokens);
@@ -4761,6 +4918,9 @@ begin
 
 
   if nroftokens=0 then exit;
+
+  tokens[0]:=uppercase(tokens[0]);
+
 
   case tokens[0][1] of
     'A':  //A* //allign
@@ -4936,6 +5096,7 @@ begin
     //handle it by the arm assembler
    // for i:=0 to nroftokens do
    //   tempstring:=tempstring+tokens[i]+' ';   //seperators like "," are gone, but the armassembler doesn't really care about that  (only tokens matter)
+    outputdebugstring('TSingleLineAssembler.Assembler: Assembling ARM instruction '+opcode+' at '+inttohex(address,8));
     exit(ArmAssemble(address, opcode, bytes));
   end;
 
@@ -4945,7 +5106,8 @@ begin
   mnemonic:=-1;
   for i:=0 to length(tokens)-1 do
   begin
-    if not ((tokens[i]='LOCK') or (tokens[i]='REP') or (tokens[i]='REPNE') or (tokens[i]='REPE')) then
+    tempstring:=uppercase(tokens[i]);
+    if not ((tempstring='LOCK') or (tempstring='REP') or (tempstring='REPNE') or (tempstring='REPE')) then
     begin
       mnemonic:=i;
       break;
@@ -4953,6 +5115,13 @@ begin
   end;
 
   if mnemonic=-1 then exit;
+
+  for i:=mnemonic downto 0 do //uppercase everything preceding and including the mnemonic
+    tokens[i]:=uppercase(tokens[i]);
+
+  if handlePseudoOps(tokens, mnemonic) then
+    nroftokens:=length(tokens);
+
 
   setlength(bytes,mnemonic);
   for i:=0 to mnemonic-1 do
@@ -4964,6 +5133,8 @@ begin
   end;
 
 
+
+
   //this is just to speed up the finding of the right opcode
   //I could have done a if mnemonic=... then ... else if mnemonic=... then ..., but that would be slow, VERY SLOW
 
@@ -4973,15 +5144,14 @@ begin
   if (nroftokens-1)>=mnemonic+3 then parameter3:=tokens[mnemonic+3] else parameter3:='';
   if (nroftokens-1)>=mnemonic+4 then parameter4:=tokens[mnemonic+4] else parameter4:='';
 
-  tempstring:=uppercase(parameter1);
+  parameter1uc:=uppercase(parameter1);
 
-
-  overrideShort:=Pos('SHORT ',tempstring)>0;
-  overrideLong:=Pos('LONG ',tempstring)>0;
+  overrideShort:=Pos('SHORT ',parameter1uc)>0;
+  overrideLong:=Pos('LONG ',parameter1uc)>0;
   if processhandler.is64Bit then
-    overrideFar:=(Pos('FAR ',tempstring)>0)
+    overrideFar:=(Pos('FAR ',parameter1uc)>0)
   else
-    overrideLong:=overrideLong or (Pos('FAR ',tempstring)>0);
+    overrideFar:=overrideLong or (Pos('FAR ',tempstring)>0);
 
 
   if not (overrideShort or overrideLong or overridefar) and (assemblerPreference<>apNone) then //no override choice by the user and not a normal preference
@@ -4998,6 +5168,9 @@ begin
   paramtype2:=gettokentype(parameter2,parameter1);
   paramtype3:=gettokentype(parameter3,'');
   paramtype4:=gettokentype(parameter4,'');
+
+  parameter1uc:=uppercase(parameter1);  //might have been updated by gettokentype
+  parameter2uc:=uppercase(parameter2);
 
   if processhandler.is64Bit then
   begin
@@ -5076,19 +5249,19 @@ begin
 
   if (paramtype1>=ttMemorylocation) and (paramtype1<=ttMemorylocation128) then
   begin
-    if pos('ES:',parameter1)>0 then
+    if pos('ES:',parameter1uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$26;
     end;
 
-    if pos('CS:',parameter1)>0 then
+    if pos('CS:',parameter1uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$2e;
     end;
 
-    if pos('SS:',parameter1)>0 then
+    if pos('SS:',parameter1uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$36;
@@ -5104,13 +5277,13 @@ begin
     end;
     }
 
-    if pos('FS:',parameter1)>0 then
+    if pos('FS:',parameter1uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$64;
     end;
 
-    if pos('GS:',parameter1)>0 then
+    if pos('GS:',parameter1uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$65;
@@ -5119,19 +5292,19 @@ begin
 
   if (paramtype2>=ttMemorylocation) and (paramtype2<=ttMemorylocation128) then
   begin
-    if pos('ES:',parameter2)>0 then
+    if pos('ES:',parameter2uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$26;
     end;
 
-    if pos('CS:',parameter2)>0 then
+    if pos('CS:',parameter2uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$2e;
     end;
 
-    if pos('SS:',parameter2)>0 then
+    if pos('SS:',parameter2uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$36;
@@ -5145,13 +5318,13 @@ begin
     end;
     }
 
-    if pos('FS:',parameter2)>0 then
+    if pos('FS:',parameter2uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$64;
     end;
 
-    if pos('GS:',parameter2)>0 then
+    if pos('GS:',parameter2uc)>0 then
     begin
       setlength(bytes,length(bytes)+1);
       bytes[length(bytes)-1]:=$65;
@@ -5342,7 +5515,7 @@ begin
       par_imm8: if (paramtype1=ttValue) then
       begin
         //imm8,
-        if (opcodes[j].paramtype2=par_al) and (parameter2='AL') then
+        if (opcodes[j].paramtype2=par_al) and (parameter2uc='AL') then
         begin
           //imm8,al
           addopcode(bytes,j);
@@ -5351,7 +5524,7 @@ begin
           exit;
         end;
 
-        if (opcodes[j].paramtype2=par_ax) and (parameter2='AX') then
+        if (opcodes[j].paramtype2=par_ax) and (parameter2uc='AX') then
         begin
           //imm8,ax /?
           addopcode(bytes,j);
@@ -5360,7 +5533,7 @@ begin
           exit;
         end;
 
-        if (opcodes[j].paramtype2=par_eax) and ((parameter2='EAX') or (parameter2='RAX')) then
+        if (opcodes[j].paramtype2=par_eax) and ((parameter2uc='EAX') or (parameter2uc='RAX')) then
         begin
           //imm8,eax
           addopcode(bytes,j);
@@ -5486,7 +5659,7 @@ begin
 
       par_moffs8: if ((paramtype1=ttMemorylocation8) or (ismemorylocationdefault(parameter1)  )) then
       begin
-        if (opcodes[j].paramtype2=par_al) and (parameter2='AL') then
+        if (opcodes[j].paramtype2=par_al) and (parameter2uc='AL') then
         begin
           if (opcodes[j].paramtype3=par_noparam) and (parameter3='') then
           begin
@@ -5512,7 +5685,7 @@ begin
 
       par_moffs16: if ((paramtype1=ttMemorylocation16) or (ismemorylocationdefault(parameter1)  )) then
       begin
-        if (opcodes[j].paramtype2=par_ax) and (parameter2='AX') then
+        if (opcodes[j].paramtype2=par_ax) and (parameter2uc='AX') then
         begin
           if (opcodes[j].paramtype3=par_noparam) and (parameter3='') then
           begin
@@ -5537,7 +5710,7 @@ begin
 
       par_moffs32: if (paramtype1=ttMemorylocation32) then
       begin
-        if (opcodes[j].paramtype2=par_eax) and ((parameter2='EAX') or (parameter2='RAX')) then
+        if (opcodes[j].paramtype2=par_eax) and ((parameter2uc='EAX') or (parameter2uc='RAX')) then
         begin
           if (opcodes[j].paramtype3=par_noparam) and (parameter3='') then
           begin
@@ -5568,11 +5741,11 @@ begin
         exit;
       end;
 
-      PAR_AL: if (parameter1='AL') then
+      PAR_AL: if (parameter1uc='AL') then
       begin
         //AL,
 
-        if (opcodes[j].paramtype2=par_dx) and (parameter2='DX') then
+        if (opcodes[j].paramtype2=par_dx) and (parameter2uc='DX') then
         begin
           //opcode al,dx
           addopcode(bytes,j);
@@ -5622,10 +5795,10 @@ begin
         end;
       end;
 
-      PAR_AX: if (parameter1='AX') then
+      PAR_AX: if (parameter1uc='AX') then
       begin
         //AX,
-        if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
+        if (opcodes[j].paramtype2=par_noparam) and (parameter2uc='') then
         begin
           //opcode AX
           addopcode(bytes,j);
@@ -5633,7 +5806,7 @@ begin
           exit;
         end;
 
-        if (opcodes[j].paramtype2=par_dx) and (parameter2='DX') then
+        if (opcodes[j].paramtype2=par_dx) and (parameter2uc='DX') then
         begin
           //opcode ax,dx
           addopcode(bytes,j);
@@ -5700,10 +5873,10 @@ begin
 
       end;
 
-      PAR_EAX: if ((parameter1='EAX') or (parameter1='RAX')) then
+      PAR_EAX: if ((parameter1uc='EAX') or (parameter1uc='RAX')) then
       begin
         //eAX,
-        if (opcodes[j].paramtype2=par_dx) and (parameter2='DX') then
+        if (opcodes[j].paramtype2=par_dx) and (parameter2uc='DX') then
         begin
           //opcode eax,dx
           addopcode(bytes,j);
@@ -5814,23 +5987,23 @@ begin
       end;
 
 
-      par_dx: if (parameter1='DX') then
+      par_dx: if (parameter1uc='DX') then
       begin
-        if (opcodes[j].paramtype2=par_al) and (parameter2='AL') then
+        if (opcodes[j].paramtype2=par_al) and (parameter2uc='AL') then
         begin
           addopcode(bytes,j);
           result:=true;
           exit;
         end;
 
-        if (opcodes[j].paramtype2=par_ax) and (parameter2='AX') then
+        if (opcodes[j].paramtype2=par_ax) and (parameter2uc='AX') then
         begin
           addopcode(bytes,j);
           result:=true;
           exit;
         end;
 
-        if (opcodes[j].paramtype2=par_eax) and ((parameter2='EAX') or (parameter2='RAX')) then
+        if (opcodes[j].paramtype2=par_eax) and ((parameter2uc='EAX') or (parameter2uc='RAX')) then
         begin
           addopcode(bytes,j);
           result:=true;
@@ -5838,17 +6011,7 @@ begin
         end;
       end;
 
-      par_cs: if (parameter1='CS') then
-      begin
-        if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
-        begin
-          addopcode(bytes,j);
-          result:=true;
-          exit;
-        end;
-      end;
-
-      par_ds: if (parameter1='DS') then
+      par_cs: if (parameter1uc='CS') then
       begin
         if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
         begin
@@ -5858,7 +6021,7 @@ begin
         end;
       end;
 
-      par_es: if (parameter1='ES') then
+      par_ds: if (parameter1uc='DS') then
       begin
         if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
         begin
@@ -5868,7 +6031,7 @@ begin
         end;
       end;
 
-      par_ss: if (parameter1='SS') then
+      par_es: if (parameter1uc='ES') then
       begin
         if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
         begin
@@ -5878,7 +6041,7 @@ begin
         end;
       end;
 
-      par_fs: if (parameter1='FS') then
+      par_ss: if (parameter1uc='SS') then
       begin
         if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
         begin
@@ -5888,7 +6051,17 @@ begin
         end;
       end;
 
-      par_gs: if (parameter1='GS') then
+      par_fs: if (parameter1uc='FS') then
+      begin
+        if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
+        begin
+          addopcode(bytes,j);
+          result:=true;
+          exit;
+        end;
+      end;
+
+      par_gs: if (parameter1uc='GS') then
       begin
         if (opcodes[j].paramtype2=par_noparam) and (parameter2='') then
         begin
@@ -5974,7 +6147,7 @@ begin
           end;
         end;
 
-        if (opcodes[j].paramtype2=par_ax) and (parameter2='AX') then
+        if (opcodes[j].paramtype2=par_ax) and (parameter2uc='AX') then
         begin
           //r16,ax,
           if (opcodes[j].paramtype3=par_noparam) and (parameter3='') then
@@ -6169,7 +6342,7 @@ begin
 
 
         //eax
-        if (opcodes[j].paramtype2=par_eax) and ((parameter2='EAX') or (parameter2='RAX')) then
+        if (opcodes[j].paramtype2=par_eax) and ((parameter2uc='EAX') or (parameter2uc='RAX')) then
         begin
           //r32,eax,
           if (opcodes[j].paramtype3=par_noparam) and (parameter3='') then
@@ -6372,6 +6545,8 @@ begin
 
                 if v>$7fffffff then
                 begin
+                  //OutputDebugString('Assembler could not assemble using r32,rm32: searching of alternatives');
+                  errorifnotfound:=rsOffsetTooBig;
                   setlength(bytes,0);
                   paramtype1:=oldParamtype1;
                   paramtype2:=oldParamtype2;
@@ -6580,7 +6755,7 @@ begin
           exit;
         end;
 
-        if (opcodes[j].paramtype2=par_cl) and (parameter2='CL') then
+        if (opcodes[j].paramtype2=par_cl) and (parameter2uc='CL') then
         begin
           addopcode(bytes,j);
           result:=createmodrm(bytes,eotoreg(opcodes[j].opcode1),parameter1);
@@ -6749,7 +6924,7 @@ begin
           end;
         end;
 
-        if (opcodes[j].paramtype2=par_cl) and (parameter2='CL') then
+        if (opcodes[j].paramtype2=par_cl) and (parameter2uc='CL') then
         begin
           //rm16,cl
           addopcode(bytes,j);
@@ -6856,7 +7031,7 @@ begin
           end;
         end;
 
-        if (opcodes[j].paramtype2=par_cl) and (parameter2='CL') then
+        if (opcodes[j].paramtype2=par_cl) and (parameter2uc='CL') then
         begin
           //rm32,cl
           addopcode(bytes,j);
@@ -8053,7 +8228,7 @@ begin
         end;
       end;
 
-      par_st0: if ((parameter1='ST(0)') or (parameter1='ST')) then
+      par_st0: if ((parameter1uc='ST(0)') or (parameter1uc='ST')) then
       begin
         //st(0),
         if (opcodes[j].paramtype2=par_st) and (paramtype2=ttRegisterst) then
@@ -8098,7 +8273,7 @@ begin
           exit;
         end;
 
-        if (opcodes[j].paramtype2=par_st0) and ((parameter2='ST(0)') or (parameter2='ST')) then
+        if (opcodes[j].paramtype2=par_st0) and ((parameter2uc='ST(0)') or (parameter2uc='ST')) then
         begin
           //st(x),st(0)
           if (opcodes[j].paramtype3=par_noparam) and (parameter3='') then
@@ -8142,53 +8317,56 @@ begin
 
         if opcodes[j].W1 then
           REX_W:=true;
+      end;
 
-        if opcodes[j].hasvex then
+      if opcodes[j].hasvex then
+      begin
+        //setup a vex prefix. Check if a 2 byte or 3 byte prefix is needed
+        //3 byte is needed when mmmmmm(vexLeadingOpcode>1) or rex.X/B or W are used
+
+        //vexOpcodeExtension: oe_F2; vexLeadingOpcode: lo_0f
+
+        bigvex:=(opcodes[j].vexLeadingOpcode>lo_0f) or REX_B or REX_X or REX_W;
+
+        if bigvex=false then
         begin
-          //setup a vex prefix. Check if a 2 byte or 3 byte prefix is needed
-          //3 byte is needed when mmmmmm(vexLeadingOpcode>1) or rex.X/B or W are used
+          //2byte vex
+          setlength(bytes,length(bytes)+2);
+          for i:=length(bytes)-1 downto RexPrefixLocation+2 do
+            bytes[i]:=bytes[i-2];
 
-          //vexOpcodeExtension: oe_F2; vexLeadingOpcode: lo_0f
+          bytes[RexPrefixLocation]:=$c5; //2 byte VEX
+          PVex2Byte(@bytes[RexPrefixLocation+1])^.pp:=integer(opcodes[j].vexOpcodeExtension);
+          PVex2Byte(@bytes[RexPrefixLocation+1])^.L:=opcodes[j].vexl;
+          PVex2Byte(@bytes[RexPrefixLocation+1])^.vvvv:=VEXvvvv;
+          PVex2Byte(@bytes[RexPrefixLocation+1])^.R:=ifthen(REX_R,0,1);
+          if relativeAddressLocation<>-1 then inc(relativeAddressLocation,2);
+        end
+        else
+        begin
+          //3byte vex
+          setlength(bytes,length(bytes)+3);
+          for i:=length(bytes)-1 downto RexPrefixLocation+3 do
+            bytes[i]:=bytes[i-3];
 
-          bigvex:=(opcodes[j].vexLeadingOpcode>lo_0f) or REX_B or REX_X or REX_W;
+          bytes[RexPrefixLocation]:=$c4; //3 byte VEX
+          PVex3Byte(@bytes[RexPrefixLocation+1])^.mmmmm:=integer(opcodes[j].vexLeadingOpcode);
+          PVex3Byte(@bytes[RexPrefixLocation+1])^.B:=ifthen(REX_B,0,1);
+          PVex3Byte(@bytes[RexPrefixLocation+1])^.X:=ifthen(REX_X,0,1);
+          PVex3Byte(@bytes[RexPrefixLocation+1])^.R:=ifthen(REX_R,0,1);
+          PVex3Byte(@bytes[RexPrefixLocation+1])^.pp:=integer(opcodes[j].vexOpcodeExtension);
+          PVex3Byte(@bytes[RexPrefixLocation+1])^.L:=opcodes[j].vexl;
+          PVex3Byte(@bytes[RexPrefixLocation+1])^.vvvv:=VEXvvvv;
+          PVex3Byte(@bytes[RexPrefixLocation+1])^.W:=ifthen(REX_W,1,0); //not inverted
 
-          if bigvex=false then
-          begin
-            //2byte vex
-            setlength(bytes,length(bytes)+2);
-            for i:=length(bytes)-1 downto RexPrefixLocation+2 do
-              bytes[i]:=bytes[i-2];
-
-            bytes[RexPrefixLocation]:=$c5; //2 byte VEX
-            PVex2Byte(@bytes[RexPrefixLocation+1])^.pp:=integer(opcodes[j].vexOpcodeExtension);
-            PVex2Byte(@bytes[RexPrefixLocation+1])^.L:=opcodes[j].vexl;
-            PVex2Byte(@bytes[RexPrefixLocation+1])^.vvvv:=VEXvvvv;
-            PVex2Byte(@bytes[RexPrefixLocation+1])^.R:=ifthen(REX_R,0,1);
-            if relativeAddressLocation<>-1 then inc(relativeAddressLocation,2);
-          end
-          else
-          begin
-            //3byte vex
-            setlength(bytes,length(bytes)+3);
-            for i:=length(bytes)-1 downto RexPrefixLocation+3 do
-              bytes[i]:=bytes[i-3];
-
-            bytes[RexPrefixLocation]:=$c4; //3 byte VEX
-            PVex3Byte(@bytes[RexPrefixLocation+1])^.mmmmm:=integer(opcodes[j].vexLeadingOpcode);
-            PVex3Byte(@bytes[RexPrefixLocation+1])^.B:=ifthen(REX_B,0,1);
-            PVex3Byte(@bytes[RexPrefixLocation+1])^.X:=ifthen(REX_X,0,1);
-            PVex3Byte(@bytes[RexPrefixLocation+1])^.R:=ifthen(REX_R,0,1);
-            PVex3Byte(@bytes[RexPrefixLocation+1])^.pp:=integer(opcodes[j].vexOpcodeExtension);
-            PVex3Byte(@bytes[RexPrefixLocation+1])^.L:=opcodes[j].vexl;
-            PVex3Byte(@bytes[RexPrefixLocation+1])^.vvvv:=VEXvvvv;
-            PVex3Byte(@bytes[RexPrefixLocation+1])^.W:=ifthen(REX_W,1,0); //not inverted
-
-            if relativeAddressLocation<>-1 then inc(relativeAddressLocation,3);
-          end;
-
-          RexPrefix:=0;  //vex and rex can not co-exist
+          if relativeAddressLocation<>-1 then inc(relativeAddressLocation,3);
         end;
 
+        RexPrefix:=0;  //vex and rex can not co-exist
+      end;
+
+      if processhandler.is64bit then
+      begin
         if RexPrefix<>0 then
         begin
           if RexPrefixLocation=-1 then raise EAssemblerException.create(rsAssemblerError);
@@ -8228,6 +8406,17 @@ begin
 
 
 
+
+      end;
+    end
+    else
+    begin
+      if (errorifnotfound<>'') then
+      begin
+        if (skiprangecheck=false) then
+          raise EAssemblerExceptionOffsetTooBig.Create(errorifnotfound)
+        else
+          exit(true);  //just a syntaxcheck. Everything is ok except the range
 
       end;
     end;
@@ -8372,6 +8561,33 @@ var i,j,k: integer;
     lastentry: integer=1;
     lastindex: PIndexArray=nil;
 
+    tm: TThreadManager;
+    oldReleaseThreadVars: procedure;
+
+procedure releasesla;
+begin
+  if sla<>nil then
+    freeandnil(sla);
+
+  if assigned(oldReleaseThreadVars) then
+    oldReleaseThreadVars;
+end;
+
+procedure addPseudoOpListEntry(op: string; handler: TPseudoOpHandler; optval: integer);
+var p: PPseudoOpData;
+begin
+  getmem(p, SizeOf(TPseudoOpData));
+  p^.handler:=handler;
+  p^.optval:=optval;
+  pseudooplist.Add(op,p);
+end;
+
+
+var pseudoopequations: array [0..31] of string = ('EQ', 'LT', 'LE', 'ONORD','NEQ', 'NLT', 'NLE', 'ORD',
+                                                  'EQ_UQ', 'NGE', 'NGT', 'FALSE', 'NEQ_OQ', 'GE', 'GT','TRUE',
+                                                  'EQ_OS', 'LT_OQ', 'LE_OQ', 'UNORD_S', 'NEQ_US', 'NLT_UQ','NLE_UQ','ORD_S',
+                                                  'EQ_US', 'NGE_UQ', 'NGT_UQ', 'FALSE_OS', 'NEQ_OS', 'GE_OQ','GT_OQ','TRUE_US');
+
 initialization
 //setup the index for the assembler
 
@@ -8380,9 +8596,9 @@ initialization
     assemblerindex[i].startentry:=-1;
     assemblerindex[i].NextEntry:=-1;
     assemblerindex[i].SubIndex:=nil;
+    k:=0;
     for j:=lastentry to opcodecount do
     begin
-
       if ord(opcodes[j].mnemonic[1])=(ord('A')+i) then
       begin
         //found the first entry with this as first character
@@ -8402,6 +8618,8 @@ initialization
     end;
 
   end;
+
+
 
   if assemblerindex[25].startentry<>-1 then
     assemblerindex[25].NextEntry:=opcodecount;
@@ -8443,10 +8661,56 @@ initialization
     end;
   end;
 
-  SingleLineAssembler:=TSingleLineassembler.create;
+
+  pseudoOplist:=TStringHashList.Create(true);
+
+  for i:=0 to 8 do
+    addPseudoOpListEntry('CMP'+pseudoopequations[i]+'SD', @pseudoOpCMPSD,i);
+
+  for i:=0 to 31 do
+    addPseudoOpListEntry('VCMP'+pseudoopequations[i]+'SD', @pseudoOpVCMPSD,i);
+
+
+  for i:=0 to 8 do
+    addPseudoOpListEntry('CMP'+pseudoopequations[i]+'SS', @pseudoOpCMPSS,i);
+
+  for i:=0 to 31 do
+    addPseudoOpListEntry('VCMP'+pseudoopequations[i]+'SS', @pseudoOpVCMPSS,i);
+
+
+  for i:=0 to 8 do
+    addPseudoOpListEntry('CMP'+pseudoopequations[i]+'PD', @pseudoOpCMPPD,i);
+
+  for i:=0 to 31 do
+    addPseudoOpListEntry('VCMP'+pseudoopequations[i]+'PD', @pseudoOpVCMPPD,i);
+
+
+  for i:=0 to 8 do
+    addPseudoOpListEntry('CMP'+pseudoopequations[i]+'PS', @pseudoOpCMPPS,i);
+
+  for i:=0 to 31 do
+    addPseudoOpListEntry('VCMP'+pseudoopequations[i]+'PS', @pseudoOpVCMPPS,i);
+
+
+
+
+
+
+
+
+
+
+  GetThreadManager(tm);
+  oldReleaseThreadVars:=tm.ReleaseThreadVars;
+  tm.ReleaseThreadVars:=@ReleaseSLA;
+  SetThreadManager(tm);
+
+  sla:=TSingleLineassembler.create;
 
 finalization
-  if SingleLineAssembler<>nil then
-    SingleLineAssembler.free;
+
+  if sla<>nil then
+    freeandnil(sla);
+
 
 end.

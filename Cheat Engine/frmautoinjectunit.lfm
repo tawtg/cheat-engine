@@ -1,12 +1,12 @@
 object frmAutoInject: TfrmAutoInject
-  Left = 419
+  Left = 540
   Height = 313
-  Top = 475
+  Top = 364
   Width = 431
   HelpContext = 1089
   AllowDropFiles = True
   Caption = 'Auto assemble'
-  ClientHeight = 313
+  ClientHeight = 293
   ClientWidth = 431
   Menu = MainMenu1
   OnClose = FormClose
@@ -15,11 +15,11 @@ object frmAutoInject: TfrmAutoInject
   OnDropFiles = FormDropFiles
   OnShow = FormShow
   Position = poScreenCenter
-  LCLVersion = '2.2.0.4'
+  LCLVersion = '2.2.2.0'
   object Panel1: TPanel
     Left = 0
     Height = 34
-    Top = 279
+    Top = 259
     Width = 431
     Align = alBottom
     AutoSize = True
@@ -60,7 +60,7 @@ object frmAutoInject: TfrmAutoInject
   end
   object Panel2: TPanel
     Left = 0
-    Height = 279
+    Height = 259
     Top = 0
     Width = 431
     Align = alClient
@@ -156,20 +156,28 @@ object frmAutoInject: TfrmAutoInject
       Caption = 'Template'
       object mi5ByteJMP: TMenuItem
         AutoCheck = True
-        Caption = '5 byte JMP'
+        Caption = '5 Byte JMP (<2GB Distance)'
         Checked = True
         RadioItem = True
       end
       object mi14ByteJMP: TMenuItem
         AutoCheck = True
-        Caption = '14 byte JMP'
+        Caption = '14 Byte JMP (>2GB Distance)'
         RadioItem = True
       end
       object N1: TMenuItem
         Caption = '-'
       end
+      object mi1ByteExceptionJMP: TMenuItem
+        AutoCheck = True
+        Caption = '1 Byte Exception JMP'
+        OnClick = mi1ByteExceptionJMPClick
+      end
+      object Separator1: TMenuItem
+        Caption = '-'
+      end
       object Codeinjection1: TMenuItem
-        Caption = 'Code injection'
+        Caption = 'Code Injection'
         ShortCut = 16457
         OnClick = Codeinjection1Click
       end
@@ -179,12 +187,12 @@ object frmAutoInject: TfrmAutoInject
         OnClick = APIHook1Click
       end
       object Coderelocation1: TMenuItem
-        Caption = 'Code relocation'
+        Caption = 'Code Relocation'
         ShortCut = 16466
         OnClick = Coderelocation1Click
       end
       object miCallLua: TMenuItem
-        Caption = 'Call CE lua function'
+        Caption = 'Call CE Lua Function'
         ShortCut = 16460
         OnClick = miCallLuaClick
       end
@@ -199,7 +207,7 @@ object frmAutoInject: TfrmAutoInject
         OnClick = menuFullInjectionClick
       end
       object CheatTablecompliantcodee1: TMenuItem
-        Caption = 'Cheat Table framework code'
+        Caption = 'Cheat Table Framework Code'
         ShortCut = 49236
         OnClick = CheatTablecompliantcodee1Click
       end
@@ -225,7 +233,7 @@ object frmAutoInject: TfrmAutoInject
     Top = 40
   end
   object SaveDialog1: TSaveDialog
-    Title = 'Open CE assembly file'
+    Title = 'Save CE assembly file'
     DefaultExt = '.CEA'
     Filter = 'Cheat Engine Assembly (*.CEA)|*.CEA|All Files (*.*)|*.*'
     Options = [ofOverwritePrompt, ofHideReadOnly, ofEnableSizing]

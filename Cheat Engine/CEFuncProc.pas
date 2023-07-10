@@ -15,7 +15,7 @@ uses
    mactypes, LCLType,macport,
   {$endif}
   {$ifdef windows}
-   jwawindows, windows,
+   jwawindows, windows, WinUtils,
   {$endif}
   zstream, LazUTF8, LCLIntf,StdCtrls,Classes,SysUtils,dialogs,{tlhelp32,}forms,messages,
 Graphics,
@@ -169,6 +169,8 @@ procedure getDriverList(list: tstrings);
 
 function EscapeStringForRegEx(const S: string): string;
 
+function getthreadCount(pid: qword): integer;
+
 function GetStackStart(threadnr: integer=0): ptruint;
 function getDiskFreeFromPath(path: string): int64;
 procedure protectme(pid: dword=0);
@@ -187,6 +189,10 @@ procedure DetachIfPossible;
 {$ifdef windows}
 procedure Log(s: string);
 {$endif}
+
+
+function requiresAdmin: boolean;
+function relaunchAsAdmin(params: widestring): boolean;
 
 
 const
@@ -357,7 +363,7 @@ uses disassembler,CEDebugger,debughelper, symbolhandler, symbolhandlerstructs,
      frmProcessWatcherUnit, KernelDebugger, formsettingsunit, MemoryBrowserFormUnit,
      savedscanhandler, networkInterface, networkInterfaceApi, vartypestrings,
      processlist, Parsers, Globals, xinput, luahandler, LuaClass, LuaObject,
-     UnexpectedExceptionsHelper, LazFileUtils, autoassembler, Clipbrd, mainunit2;
+     UnexpectedExceptionsHelper, LazFileUtils, autoassembler, Clipbrd, mainunit2, cpuidUnit, OpenSave;
 
 
 resourcestring
@@ -416,6 +422,8 @@ resourcestring
   rsPosition = ' Position';
   rsThisCanTakeSomeTime = 'This can take some time if you are missing the '
     +'PDB''s and CE will look frozen. Are you sure?';
+  rsAskToRestartForAdmin = 'This function requires administrator rights. '
+    +'Relaunch CE using admin rights?';
 
 function ProcessID: dword;
 begin
@@ -821,131 +829,138 @@ var s: tstringlist;
     //el: TCEExceptionListArray;
 begin
   outputdebugstring('cefuncproc.InjectDLL('''+dllname+''','''+functiontocall+''')');
-  s:=tstringlist.create;
-  s.add('[enable]');
-  s.add('registersymbol(v1)');
-  s.add('registersymbol(v2)');
-  s.add('registersymbol(v3)');
-  s.add('registersymbol(injector)');
-  s.add('registersymbol(errorstr)');
-  if processhandler.is64bit then
+  if MacIsArm64 then
   begin
-    s.add('alloc(v1, 8)');
-    s.add('alloc(v2, 8)');
-    s.add('alloc(v3, 8)');
-    s.add('alloc(errorstr, 8)');
+    raise exception.create('module injection is not yet supported on m1');
   end
   else
   begin
-    s.add('alloc(v1, 4)');
-    s.add('alloc(v2, 4)');
-    s.add('alloc(v3, 4)');
-    s.add('alloc(errorstr, 4)');
+
+    s:=tstringlist.create;
+    s.add('[enable]');
+    s.add('registersymbol(v1)');
+    s.add('registersymbol(v2)');
+    s.add('registersymbol(v3)');
+    s.add('registersymbol(injector)');
+    s.add('registersymbol(errorstr)');
+    if processhandler.is64bit then
+    begin
+      s.add('alloc(v1, 8)');
+      s.add('alloc(v2, 8)');
+      s.add('alloc(v3, 8)');
+      s.add('alloc(errorstr, 8)');
+    end
+    else
+    begin
+      s.add('alloc(v1, 4)');
+      s.add('alloc(v2, 4)');
+      s.add('alloc(v3, 4)');
+      s.add('alloc(errorstr, 4)');
+    end;
+
+    s.add('alloc(injector,512)');
+    s.add('alloc(returnvalue, 4)');
+    s.add('label(dllname)');
+    s.add('label(error)');
+    s.add('label(cleanup)');
+    s.add('');
+    s.add('injector:');
+    if processhandler.is64bit then
+    begin
+      //rsp=*8
+      s.add('mov rax,v1');
+      s.add('mov [rax],rsp');
+      s.add('push rbp');
+
+      //rsp=*0
+      s.add('mov rax,v2');
+      s.add('mov [rax],rsp');
+    end
+    else
+    begin
+      //esp=*c
+      s.add('mov [v1],esp');
+      s.add('push ebp');
+      //esp=*8
+      s.add('mov [v2],esp');
+    end;
+
+    if processhandler.is64Bit then
+    begin
+      s.add('mov rdi,dllname');
+      s.add('mov rsi,1');
+    end
+    else
+    begin
+      s.add('push 1'); //rtld lazy
+      //esp=*4
+      s.add('push dllname');
+      //esp=*0
+    end;
+
+    //64-bit: rsp=*0
+    //32-bit: esp=*0
+
+    if processhandler.is64Bit then
+    begin
+      s.add('mov rax,v3');
+      s.add('mov [rax],rsp');
+    end
+    else
+      s.add('mov [v3],esp');
+
+    s.add('call dlopen');
+    //s.add('xor eax,eax');
+
+    s.add('cmp eax,0');
+    s.add('je short error');
+
+    if processhandler.is64Bit then
+    begin
+      s.add('mov rax,returnvalue');
+      s.add('mov dword [rax],1');
+      s.adD('jmp short cleanup');
+      s.add('error:');
+      s.add('mov rax,returnvalue');
+      s.add('mov dword [rax],2');
+      s.add('call dlerror');
+      s.add('mov rsi,errorstr');
+      s.add('mov [rsi],rax');
+    end
+    else
+    begin
+      s.add('mov dword [returnvalue],1');
+      s.adD('jmp short cleanup');
+      s.add('error:');
+      s.add('mov dword [returnvalue],2');
+      s.add('call dlerror');
+      s.add('mov [errorstr],eax');
+    end;
+    s.add('cleanup:');
+
+    if processhandler.is64Bit then
+    begin
+      s.add('pop rbp');
+    end
+    else
+    begin
+      s.add('add esp,8');  //dlopen is a cdecl  (64-bit has no pushed params)
+      s.add('pop ebp');
+    end;
+
+
+    s.add('ret');
+    s.add('');
+    s.add('dllname:');
+    s.add('db '''+dllname+''',0');
+    s.add('');
+    s.add('returnvalue:');
+    s.add('dd 0');
+    s.add('');
+    s.add('[disable]');
+    s.add('dealloc(injector)');
+    s.add('dealloc(returnvalue)');
   end;
-
-  s.add('alloc(injector,512)');
-  s.add('alloc(returnvalue, 4)');
-  s.add('label(dllname)');
-  s.add('label(error)');
-  s.add('label(cleanup)');
-  s.add('');
-  s.add('injector:');
-  if processhandler.is64bit then
-  begin
-    //rsp=*8
-    s.add('mov rax,v1');
-    s.add('mov [rax],rsp');
-    s.add('push rbp');
-
-    //rsp=*0
-    s.add('mov rax,v2');
-    s.add('mov [rax],rsp');
-  end
-  else
-  begin
-    //esp=*c
-    s.add('mov [v1],esp');
-    s.add('push ebp');
-    //esp=*8
-    s.add('mov [v2],esp');
-  end;
-
-  if processhandler.is64Bit then
-  begin
-    s.add('mov rdi,dllname');
-    s.add('mov rsi,1');
-  end
-  else
-  begin
-    s.add('push 1'); //rtld lazy
-    //esp=*4
-    s.add('push dllname');
-    //esp=*0
-  end;
-
-  //64-bit: rsp=*0
-  //32-bit: esp=*0
-
-  if processhandler.is64Bit then
-  begin
-    s.add('mov rax,v3');
-    s.add('mov [rax],rsp');
-  end
-  else
-    s.add('mov [v3],esp');
-
-  s.add('call dlopen');
-  //s.add('xor eax,eax');
-
-  s.add('cmp eax,0');
-  s.add('je short error');
-
-  if processhandler.is64Bit then
-  begin
-    s.add('mov rax,returnvalue');
-    s.add('mov dword [rax],1');
-    s.adD('jmp short cleanup');
-    s.add('error:');
-    s.add('mov rax,returnvalue');
-    s.add('mov dword [rax],2');
-    s.add('call dlerror');
-    s.add('mov rsi,errorstr');
-    s.add('mov [rsi],rax');
-  end
-  else
-  begin
-    s.add('mov dword [returnvalue],1');
-    s.adD('jmp short cleanup');
-    s.add('error:');
-    s.add('mov dword [returnvalue],2');
-    s.add('call dlerror');
-    s.add('mov [errorstr],eax');
-  end;
-  s.add('cleanup:');
-
-  if processhandler.is64Bit then
-  begin
-    s.add('pop rbp');
-  end
-  else
-  begin
-    s.add('add esp,8');  //dlopen is a cdecl  (64-bit has no pushed params)
-    s.add('pop ebp');
-  end;
-
-
-  s.add('ret');
-  s.add('');
-  s.add('dllname:');
-  s.add('db '''+dllname+''',0');
-  s.add('');
-  s.add('returnvalue:');
-  s.add('dd 0');
-  s.add('');
-  s.add('[disable]');
-  s.add('dealloc(injector)');
-  s.add('dealloc(returnvalue)');
-
   //clipboard.AsText:=s.Text;
 
  // raise exception.create('copy to clipboard now');
@@ -1073,7 +1088,10 @@ begin
   try
     c:=getConnection;
     if (c<>nil) and (c.isNetworkHandle(processhandle)) then //network loadModule
-      c.loadModule(processhandle, dllname)
+    begin
+      if c.loadModule(processhandle, dllname)=false then
+        raise exception.create('Failed to load '+dllname);
+    end
     else
     begin
       //todo: Change this to a full AA script (but make sure not to call injectdll in there :)  )
@@ -2383,7 +2401,7 @@ begin
   if Thread32First(ths,te32) then
   repeat
     if te32.th32OwnerProcessID=processid then
-      threadlist.Add(inttohex(te32.th32ThreadID,1));
+      threadlist.AddObject(inttohex(te32.th32ThreadID,1), tobject(te32.th32ThreadID));
 
   until Thread32next(ths,te32)=false;
 
@@ -2622,7 +2640,9 @@ var previouswinhandle, winhandle: Hwnd;
     x: tstringlist;
     i,j:integer;
 
+    {$IFDEF WINDOWS}
     ProcessListInfo: PProcessListInfo;
+    {$ENDIF}
     tempptruint: ptruint;
 begin
   {$IFDEF windows}
@@ -2692,16 +2712,6 @@ begin
 end;
 
 procedure GetWindowList(ProcessListBox: TListBox; showInvisible: boolean=true);
-var previouswinhandle, winhandle: Hwnd;
-    winprocess: Dword;
-    temp: Pchar;
-    wintitle: string;
-
-    x: tstringlist;
-    i,j:integer;
-
-    ProcessListInfo: PProcessListInfo;
-    tempdword: dword;
 begin
   GetWindowList(ProcessListBox.Items, showInvisible);
 end;
@@ -2772,6 +2782,7 @@ var original,a: dword;
     s: PtrUInt;
     v: boolean;
 begin
+  result:=false;
   //make writable, write, restore, flush
   if SystemSupportsWritableExecutableMemory or SkipVirtualProtectEx then
   begin
@@ -3597,13 +3608,28 @@ begin
   result:=s1;
 end;
 
+function getthreadCount(pid: qword): integer;
+var
+  ths: THandle;
+  c: integer;
+  te: TThreadEntry32;
+begin
+  result:=0;
+  ths:=CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, pid);
+
+  te.dwsize:=sizeof(te);;
+  if Thread32First(ths, te) then repeat
+    if te.th32OwnerProcessID=pid then inc(result);
+  until Thread32Next(ths,te)=false;
+
+  closehandle(ths);
+end;
 
 var
   StackStartCachePID: dword;
   StackStartCache: tmap;
   StackStartCacheCS: TCriticalSection;
   StackStartCacheKernel32Address: ptruint;
-
 
 function GetStackStart(threadnr: integer=0): ptruint;
 {$IFDEF windows}
@@ -3841,11 +3867,86 @@ begin
 
 end;
 
+function relaunchAsAdmin(params: widestring): boolean;
+var wd: widestring;
+  path: widestring;
+begin
+
+  {$ifdef windows}
+  wd:=GetCurrentDir;
+  path:= Application.ExeName;
+  result:=ShellExecute(0,'runas',pwidechar(path),pwidechar(params),pwidechar(wd),SW_SHOW)<>5;
+  {$endif}
+end;
+
+type
+  TRequireAdminDialog=class
+  private
+  public
+    result: boolean;
+    procedure showDialog;
+  end;
+
+procedure TRequireAdminDialog.showDialog;
+var i: integer;
+begin
+  result:=false;
+  for i:=1 to ParamCount do
+    if ParamStr(i)='relaunchAsAdmin' then exit; //weird, but should prevent infinite loops in case this happens
+
+  if askAboutRunningAsAdmin then
+  begin
+    if MessageDlg(rsAskToRestartForAdmin, mtConfirmation, [mbYes, mbNo], 0)<>mryes then exit;
+  end;
+
+
+  result:=relaunchAsAdmin('relaunchAsAdmin');
+  if result then
+  begin
+    if askAboutRunningAsAdmin=false then
+    begin
+      application.Terminate; //old one can be canceled
+      ExitProcess(0);
+    end;
+
+  end;
+end;
+
+function requiresAdmin: boolean;
+var d: TRequireAdminDialog;
+begin
+  result:=runningAsAdmin;
+
+  if not result then
+  begin
+    d:=TRequireAdminDialog.Create;
+    if MainThreadID=GetCurrentThreadId then
+      d.showDialog
+    else
+      tthread.Synchronize(nil, d.showDialog);
+
+    d.free;
+  end;
+end;
+
+var r: TCPUIDResult;
+  h: thandle;
+
 initialization
   StackStartCache:=tmap.Create(itu4,sizeof(ptruint));
   StackStartCachePID:=0;
   StackStartCacheCS:=TCriticalSection.Create;
 
+  askAboutRunningAsAdmin:=false;
+  runningAsAdmin:=IsWindowsAdmin;
+  if runningAsAdmin then
+  begin
+    h:=OpenSCManager(nil,nil,GENERIC_READ or GENERIC_WRITE);
+    if h=0 then
+      runningAsAdmin:=false
+    else
+      CloseServiceHandle(h);
+  end;
 
   if not assigned(OpenProcess) then
   begin
@@ -3883,6 +3984,13 @@ initialization
 
   {$IFDEF windows}
   GetSystemInfo(@systeminfo);
+
+  r:=CPUID(0);
+  systemSupportsIntelPT:=((r.ebx=1970169159) and (r.ecx=1818588270) and (r.edx=1231384169)) and //intel
+   ((CPUID(7,0).ebx shr 25) and 1=1) and //has IPT
+   ((CPUID($14,0).ebx and 1)=1); //can select process
+
+
   {$ENDIF}
 
   username:=GetUserNameFromPID(GetCurrentProcessId);

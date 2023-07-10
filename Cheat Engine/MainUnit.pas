@@ -17,11 +17,14 @@ uses
   ceguicomponents,formdesignerunit,xmlutils,vartypestrings,plugin,byteinterpreter,
   MenuItemExtra,frmgroupscanalgoritmgeneratorunit
 
-  , macport,LCLVersion, UTF8Process, macportdefines, fgl, betterControls;     //last one
+  , macport,LCLVersion, UTF8Process, macportdefines, fgl, networkInterfaceApi,
+  networkInterface,
+  betterControls;     //last one
   {$endif}
 
   {$ifdef windows}
-  jwaWindows, Windows, LCLIntf, LCLProc, Messages, SysUtils, Classes, Graphics,
+  jwaWindows, Windows, LCLIntf, LCLProc, Messages, SysUtils, Classes, SyncObjs,
+  SyncObjs2, Graphics,
   Controls, Forms, ComCtrls, StdCtrls, Menus, Buttons, shellapi,
   imagehlp, ExtCtrls, Dialogs, Clipbrd, CEDebugger, kerneldebugger, assemblerunit,
   hotkeyhandler, registry, Math, ImgList, commctrl, NewKernelHandler,
@@ -306,12 +309,24 @@ type
     cbCompareToSavedScan: TCheckBox;
     cbLuaFormula: TCheckBox;
     cbNewLuaState: TCheckBox;
+    cbPresentMemoryOnly: TCheckBox;
     ColorDialog1: TColorDialog;
     CreateGroup: TMenuItem;
     FromAddress: TEdit;
     andlabel: TLabel;
     lblcompareToSavedScan: TLabel;
+    miTestAccessViolationThread: TMenuItem;
+    miTriggerAccessViolation: TMenuItem;
     MenuItem16: TMenuItem;
+    MenuItem17: TMenuItem;
+    MenuItem18: TMenuItem;
+    miClearWorkingSet: TMenuItem;
+    miNetworkReadUseProcMem: TMenuItem;
+    miNetworkReadUsePtrace: TMenuItem;
+    miNetworkReadUseVmread: TMenuItem;
+    miNetworkWriteUseProcMem: TMenuItem;
+    miNetworkWriteUsePtrace: TMenuItem;
+    miNetworkWriteUseVmWrite: TMenuItem;
     miDeleteSavedScanResults: TMenuItem;
     miOnlyShowCurrentCompareToColumn: TMenuItem;
     miLoadRecent: TMenuItem;
@@ -321,7 +336,7 @@ type
     mfImageList: TImageList;
     lblSigned: TLabel;
     MainMenu2: TMainMenu;
-    MenuItem12: TMenuItem;
+    miTutorial64: TMenuItem;
     MenuItem14: TMenuItem;
     MenuItem15: TMenuItem;
     Copyselectedaddresses1: TMenuItem;
@@ -331,6 +346,7 @@ type
     miDotNET: TMenuItem;
     miGetDotNetObjectList: TMenuItem;
     miDBVMFindWhatWritesOrAccesses: TMenuItem;
+    pmPresentMemoryOnly: TPopupMenu;
     sep2: TMenuItem;
     miChangeValueBack: TMenuItem;
     miSignTable: TMenuItem;
@@ -342,6 +358,7 @@ type
     miLanguages: TMenuItem;
     ScanText2: TLabel;
     scanvalue2: TEdit;
+    sbClearActiveMemory: TSpeedButton;
     tLuaGCPassive: TTimer;
     tLuaGCActive: TTimer;
     ToAddress: TEdit;
@@ -577,9 +594,13 @@ type
       var DefaultDraw: Boolean);
     procedure CreateGroupClick(Sender: TObject);
     procedure gbScanOptionsChangeBounds(Sender: TObject);
-    procedure MenuItem12Click(Sender: TObject);
+    procedure Label3Click(Sender: TObject);
+    procedure miTestAccessViolationThreadClick(Sender: TObject);
+    procedure miTriggerAccessViolationClick(Sender: TObject);
+    procedure miTutorial64Click(Sender: TObject);
     procedure MenuItem15Click(Sender: TObject);
     procedure MenuItem16Click(Sender: TObject);
+    procedure miClearWorkingSetClick(Sender: TObject);
     procedure miDeleteSavedScanResultsClick(Sender: TObject);
     procedure miFoundListPreferencesClick(Sender: TObject);
     procedure miAutoAssembleErrorMessageClick(Sender: TObject);
@@ -590,6 +611,8 @@ type
     procedure miChangeValueBackClick(Sender: TObject);
     procedure miDBVMFindWhatWritesOrAccessesClick(Sender: TObject);
     procedure miAlwaysHideChildrenClick(Sender: TObject);
+    procedure miNetworkClick(Sender: TObject);
+    procedure miNetworkReadUseProcMemClick(Sender: TObject);
     procedure miOnlyShowCurrentCompareToColumnClick(Sender: TObject);
     procedure miSignTableClick(Sender: TObject);
     procedure miAsyncScriptClick(Sender: TObject);
@@ -840,6 +863,15 @@ type
 
     InsideSetActivePreviousResult: boolean;
 
+    exceptionerrorcs: TCriticalSection;
+    currentexceptionerror: string;
+    showingException: boolean;
+
+    TraceExceptions: boolean;
+
+    procedure updateNetworkOption(sender: TObject);
+    procedure updateNetworkOptions;
+
     procedure ClearRecentFiles(Sender:TObject);
     procedure RecentFilesClick(Sender:TObject);
     procedure CheckForSpeedhackKey(sender: TObject);
@@ -854,7 +886,7 @@ type
     procedure MemScanStart(sender: TObject);
     procedure MemScanDone(sender: TObject);
     procedure PluginSync(var m: TMessage); message wm_pluginsync;
-    procedure ShowError(var message: TMessage); message wm_showerror;
+    procedure ShowError;
     procedure Edit;
     procedure paste(simplecopypaste: boolean);
     procedure CopySelectedRecords;
@@ -1090,7 +1122,8 @@ uses cefuncproc, MainUnit2, ProcessWindowUnit, MemoryBrowserFormUnit, TypePopup,
   PointerscanresultReader, Parsers, Globals {$ifdef windows},GnuAssembler, xinput{$endif} ,DPIHelper,
   multilineinputqueryunit {$ifdef windows},winsapi{$endif} ,LuaClass, Filehandler{$ifdef windows}, feces{$endif}
   {$ifdef windows},frmDBVMWatchConfigUnit, frmDotNetObjectListUnit{$endif} ,ceregistry ,UnexpectedExceptionsHelper
-  ,frmFoundlistPreferencesUnit, fontSaveLoadRegistry{$ifdef windows}, cheatecoins{$endif},strutils;
+  ,frmFoundlistPreferencesUnit, fontSaveLoadRegistry{$ifdef windows}, cheatecoins{$endif},strutils, iptlogdisplay,
+  libcepack;
 
 resourcestring
   rsInvalidStartAddress = 'Invalid start address: %s';
@@ -1313,6 +1346,11 @@ resourcestring
   rsEnableSpeedHack = 'Enable '+strSpeedHack;
   rsPreviousValueList = 'Previous value list';
   rsSelectTheSavedResult = 'Select the saved results you wish to use';
+  rsNetworkOption = 'Network option :';
+  rsClearingMeansSlowness = 'Clearing the assigned memory for this process '
+    +'will cause it to obtain all the memory it needs again which can cause a '
+    +'temporary slowdown in the target. Make sure the value you''re interested '
+    +'in gets accessed once before you scan. Continue?';
 
 const
   VARTYPE_INDEX_BINARY=0;
@@ -2132,27 +2170,48 @@ begin
   m.Result := ptruint(func(params));
 end;
 
-procedure TMainForm.ShowError(var message: TMessage);
-var
-  err: pchar;
-  errs: string;
+procedure TMainForm.ShowError;
+var fn: string;
+  nosaveerror: boolean;
+  s: string;
+  path: string;
 begin
-  err:=pchar(message.lParam);
 
-  if err<>nil then
+  try
+    nosaveerror:=false;
+    fn:=ExtractFileName(SaveDialog1.filename);
+    if fn='' then
+    begin
+      fn:='noname.ct';
+      path:=opendialog1.InitialDir;
+    end
+    else
+    begin
+      if lowercase(ExtractFileExt(fn))<>'.ct' then
+        fn:=fn+'.ct';
+
+      path:=ExtractFilePath(SaveDialog1.filename);
+    end;
+
+
+
+    fn:='ExceptionAutoSave_'+fn;
+    fn:=path+fn;
+    SaveTable(fn);
+    nosaveerror:=true;
+  except
+  end;
+
+  if nosaveerror then
   begin
-    errs:=err;
-
-    if (errs='Access violation') and (miEnableLCLDebug.checked) then
-      errs:=errs+#13#10'Please send the cedebug.txt file to Dark Byte. Thanks';
-
-    if MainThreadID=GetCurrentThreadId then
-      MessageDlg(errs, mtError, [mbOK], 0);
-
-    freememandnil(err);
+    s:=currentexceptionerror+#13#10+'The current table has been saved to '+fn;
+    MessageDlg(s, mterror,[mbok],0);
   end
   else
-    MessageDlg(rsUnspecifiedError, mtError, [mbOK], 0);
+  begin
+    MessageDlg(currentexceptionerror, mterror,[mbok],0);
+  end;
+
 end;
 
 //----------------------------------
@@ -2396,25 +2455,58 @@ begin
   end;
 end;
 
-
 procedure TMainForm.exceptionhandler(Sender: TObject; E: Exception);
-var err: pchar;
+var
+  s: string;
+  op: string;
 begin
   //unhandled exeption. Also clean lua stack
+  s:={$ifdef THREADNAMESUPPORT}GetThreadName+': '+{$endif}'Unhandled exception: '+e.message;
 
-  getmem(err, length(e.Message)+1);
-  strcopy(err, pchar(e.message));
-  err[length(e.message)]:=#0;
-
-
-  if miEnableLCLDebug.checked then
+  {$ifdef windows}
+  if e is EAccessViolation then
   begin
-    DebugLn('Exception '+e.Message);
+    case EAccessViolation(e).ExceptionRecord.ExceptionInformation[0] of
+      0: op:='read';
+      1: op:='write to';
+      8: op:='execute';
+      else op:='do something weird with';
+    end;
+
+    s:=s+' (tried to '+op+' address '+inttohex(qword(EAccessViolation(e).ExceptionRecord.ExceptionInformation[1]),8)+')';
+  end;
+  {$endif}
+
+
+  if TraceExceptions then
+  begin
+    DebugLn(s);
+
+
     DumpExceptionBackTrace;
 
+    s:=s+#13#10'Please send the cedebug.txt file to Dark Byte. Thanks';
   end;
 
-  PostMessage(handle, wm_showerror, 0, ptruint(err));
+  if showingException then exit; //don't bother showing another one. Just read the log
+
+  if exceptionerrorcs.TryEnter then //it's not important if it's already showing another error
+  begin
+    if showingException=false then //should be the case, but check anyhow
+    begin
+      currentexceptionerror:=s;
+
+      showingException:=true;
+      if MainThreadID=GetCurrentThreadId then
+        showerror
+      else
+        tthread.Synchronize(nil, showerror);
+
+      showingException:=false;
+    end;
+
+    exceptionerrorcs.leave;
+  end;
 end;
 
 
@@ -2907,6 +2999,9 @@ var
   DoNotOpenAssociatedTable: boolean;
   //set to true if the table had AA scripts enabled or the code list had nopped instruction
 begin
+  if getConnection<>nil then
+    updateNetworkOptions;
+
   {$ifdef windows}
   if aprilfools then decreaseCheatECoinCount;
   {$endif}
@@ -2930,7 +3025,9 @@ begin
 
   if processid = $FFFFFFFF then
   begin
-    processlabel.Caption := strPhysicalMemory;
+    if ProcessHandler.ProcessHandle<>QWORD(-2) then
+      processlabel.Caption := strPhysicalMemory;
+
     cbPauseWhileScanning.visible:=false;
 
     if cbsaferPhysicalMemory=nil then
@@ -3000,18 +3097,15 @@ begin
     cbSpeedhack.Enabled := False;
     cbUnrandomizer.Enabled := False;
 
-
-
     if processid <> $FFFFFFFF then
     begin
-
       processlabel.Caption := strError;
       raise Exception.Create(strErrorWhileOpeningProcess{$ifdef darwin}+strErrorwhileOpeningProcessMac{$endif});
-
     end
     else
     begin
-      processlabel.Caption := strPhysicalMemory;
+      if processhandle<>qword(-2) then
+        processlabel.Caption := strPhysicalMemory;
     end;
 
     UpdateScanType;
@@ -3201,6 +3295,8 @@ begin
   else
     savetable(savedialog1.FileName);
 end;
+
+
 
 procedure TMainForm.Description1Click(Sender: TObject);
 begin
@@ -3471,6 +3567,10 @@ begin
       llf.Finish;
   end;
 
+  TraceExceptions:=miEnableLCLDebug.checked;
+
+  miTriggerAccessViolation.visible:=TraceExceptions;
+  miTestAccessViolationThread.visible:=TraceExceptions;
 
 end;
 
@@ -3574,6 +3674,62 @@ begin
   spawnBoundsUpdater;
 end;
 
+procedure TMainForm.Label3Click(Sender: TObject);
+begin
+
+end;
+
+
+procedure triggerAV(AData : Pointer);
+var p: pbyte;
+begin
+  p:=pbyte($ce);
+  p^:=p^+$ce;
+
+  beep;
+
+end;
+
+type TTestThread=class(tthread)
+  procedure Execute; override;
+end;
+
+
+procedure TTestThread.Execute;
+begin
+  SetThreadDebugName(ThreadID,'Crashy thread');
+  triggerav(nil);
+
+end;
+
+procedure TMainForm.miTestAccessViolationThreadClick(Sender: TObject);
+var m: Tmethod;
+
+  t: TTestthread;
+begin
+  t:=ttestthread.Create(true);
+
+
+  //t.FreeOnTerminate:=true;
+  t.Start;
+  {
+  while t.Finished=false do
+    sleep(100);
+
+  if t.FatalException=nil then
+    showmessage('all ok')
+  else
+    showmessage('error');  }
+
+
+end;
+
+procedure TMainForm.miTriggerAccessViolationClick(Sender: TObject);
+begin
+  triggerAV(nil);
+  showmessage('Weeee! Fuck You!');
+end;
+
 
 procedure TMainForm.MenuItem16Click(Sender: TObject);
 {$ifdef darwin}
@@ -3590,7 +3746,17 @@ begin
   {$endif}
 end;
 
-procedure TMainForm.MenuItem12Click(Sender: TObject);
+procedure TMainForm.miClearWorkingSetClick(Sender: TObject);
+begin
+  if assigned(EmptyWorkingSet) then
+  begin
+    if messagedlg(rsClearingMeansSlowness, mtInformation, [mbyes, mbno], 0)=
+      mryes then
+      EmptyWorkingSet(processhandle);
+  end;
+end;
+
+procedure TMainForm.miTutorial64Click(Sender: TObject);
 {$ifdef darwin}
 var p: TProcessUTF8;
   path: string;
@@ -3648,6 +3814,7 @@ var
 
   tobedeleted: string;
 begin
+  tobedeleted:='';
   s:=tstringlist.create;
   i:=memscan.getsavedresults(s);
   if i=1 then exit;
@@ -3667,9 +3834,9 @@ begin
   if compareToSavedScan and (currentlySelectedSavedResultname=tobedeleted) then
     cbCompareToSavedScan.checked:=false;
 
+  if tobedeleted<>'' then
+    memscan.deleteSavedResult(tobedeleted);
 
-
-  memscan.deleteSavedResult(tobedeleted);
   reloadPreviousResults;
 end;
 
@@ -5726,6 +5893,7 @@ var
   createlog: boolean;
   s: string;
 begin
+  exceptionerrorcs:=TCriticalSection.Create;
   mtid:=MainThreadID;
 
   tthread.NameThreadForDebugging('Main GUI Thread', GetCurrentThreadId);
@@ -5849,6 +6017,7 @@ begin
   frmLuaTableScript.Caption := rsLuaScriptCheatTable;
   frmLuaTableScript.Save1.OnClick := miSave.onclick;
   frmLuaTableScript.SaveAs1.OnClick:= save1.OnClick;
+  frmLuaTableScript.Name := 'frmLuaTableScript';
 
 
   hotkeypressed := -1;
@@ -7289,6 +7458,11 @@ begin
     miAutoAssembleErrorMessage.visible:=selectedrecord.LastAAExecutionFailed;
     if selectedrecord.LastAAExecutionFailed then
       miAutoAssembleErrorMessage.Caption:='<<'+selectedrecord.LastAAExecutionFailedReason+'>>';
+  end
+  else
+  begin
+    miAutoAssembleErrorMessage.visible:=false;
+    miAutoAssembleErrorMessage.Caption:='';
   end;
 end;
 
@@ -7603,6 +7777,8 @@ begin
         reg.WriteInteger('scan CopyOnWrite', integer(cbCopyOnWrite.State));
         reg.WriteInteger('scan Executable', integer(cbExecutable.State));
         reg.WriteInteger('scan Writable', integer(cbWritable.State));
+
+        reg.WriteBool('scan PresentMemoryOnly', cbPresentMemoryOnly.checked);
       end;
     except
 
@@ -7784,6 +7960,182 @@ begin
     else
       addresslist.selectedRecord.options := addresslist.selectedRecord.options - [moAlwaysHideChildren];
   end;
+end;
+
+procedure TMainForm.miNetworkClick(Sender: TObject);
+begin
+  updateNetworkOptions;
+end;
+
+type
+  TCEServerOptionMenuItemData=class
+    data: TCEServerOption;
+  end;
+
+  TCEServerOptionMenuItemValue=class
+    value: string;
+  end;
+
+procedure TMainForm.updateNetworkOption(sender: TObject);
+var
+  mi: TMenuItem absolute sender;
+  data:  TCEServerOptionMenuItemData;
+  value: TCEServerOptionMenuItemValue;
+  v: string;
+  c: TCEConnection;
+begin
+
+  if (sender is TMenuItem) then
+  begin
+    if tobject(mi.tag) is TCEServerOptionMenuItemValue then
+    begin
+      value:=TCEServerOptionMenuItemValue(mi.tag);
+      data:=TCEServerOptionMenuItemData(mi.Parent.Tag);
+
+      v:=value.value;
+
+      c:=getConnection;
+      if c<>nil then
+      begin
+        c.setOption(data.data.optname, v);
+      end;
+    end
+    else
+    begin
+      data:=TCEServerOptionMenuItemData(mi.tag);
+      if data.data.optiontype=netBoolean then
+      begin
+        if mi.checked then v:='1' else v:='0';
+      end
+      else
+      begin
+        v:=data.data.currentvalue;
+        if InputQuery(rsNetworkOption+data.data.optname, rsChangeValue, v)<>true
+          then exit;
+      end;
+
+      c:=getConnection;
+      if c<>nil then
+      begin
+        c.setOption(data.data.optname, v);
+        data.data.currentvalue:=c.getOption(data.data.optname);
+
+        mi.OnClick:=nil;
+        if data.data.optiontype=netBoolean then
+          mi.checked:=data.data.currentvalue='1'
+        else
+          mi.caption:=data.data.optdescription+' : '+data.data.currentvalue;
+
+        mi.OnClick:=updateNetworkOption;
+      end;
+    end;
+  end;
+end;
+
+procedure TMainForm.updateNetworkOptions;
+var
+  i,j: integer;
+  ol: TCEServerOptions;
+
+  mi: TMenuItem;
+  smi: TMenuItem;
+  data: TCEServerOptionMenuItemData;
+  value: TCEServerOptionMenuItemValue;
+  sl: TStringlist;
+
+  v: array of string;
+begin
+  //fetch the current available ceserver options, and show them in the menu
+  while miNetwork.Count>3 do
+  begin
+    if tobject(miNetwork.items[3].Tag) is TObject then
+      TObject(miNetwork.items[3].Tag).free;
+
+    miNetwork.Items[3].Free;
+  end;
+
+  ol:=[];
+  getConnection.getOptions(ol);
+
+  for i:=0 to length(ol)-1 do
+  begin
+    mi:=TMenuItem.Create(self);
+    mi.Caption:=ol[i].optdescription;
+
+    data:=TCEServerOptionMenuItemData.create;
+    data.data:=ol[i];
+    mi.Tag:=ptruint(data);
+
+
+    if ol[i].optiontype=netParent then
+    begin
+      //nothing else
+    end
+    else
+    begin
+      mi.onclick:=updateNetworkOption;
+      if ol[i].optiontype=netBoolean then
+      begin
+        mi.AutoCheck:=true;
+        mi.checked:=ol[i].currentvalue='1';
+      end
+      else
+      begin
+
+        if ol[i].acceptablevalues<>'' then
+        begin
+          mi.onclick:=nil;
+          //turn the options into subitems
+          sl:=TStringList.Create;
+          sl.LineBreak:=';';
+          sl.Text:=ol[i].acceptablevalues;
+
+          for j:=0 to sl.Count-1 do
+          begin
+            v:=sl[j].Split('=');
+            value:=TCEServerOptionMenuItemValue.Create;
+            value.value:=v[0];
+
+            smi:=TMenuItem.create(self);
+            smi.Caption:=v[1];
+            smi.RadioItem:=true;
+            smi.GroupIndex:=i+1;
+            smi.checked:=ol[i].currentvalue=v[0];
+            smi.tag:=ptruint(value);
+            smi.AutoCheck:=true;
+
+            smi.onclick:=updateNetworkOption;
+
+            mi.Add(smi);
+          end;
+
+          sl.free;
+        end
+        else
+          mi.caption:=mi.caption+' : '+ol[i].currentvalue;
+      end;
+    end;
+
+    if ol[i].parentoptname<>'' then
+    begin
+      for j:=0 to miNetwork.count-1 do
+      begin
+        if (tobject(miNetwork.items[j].Tag) is TCEServerOptionMenuItemData) and (TCEServerOptionMenuItemData(miNetwork.items[j].Tag).data.optname=ol[i].parentoptname) then
+        begin
+          miNetwork.items[j].Add(mi);
+          break;
+        end;
+      end;
+    end
+    else
+      miNetwork.Add(mi);
+  end;
+
+end;
+
+procedure TMainForm.miNetworkReadUseProcMemClick(Sender: TObject);
+begin
+
 end;
 
 procedure TMainForm.miOnlyShowCurrentCompareToColumnClick(Sender: TObject);
@@ -8105,9 +8457,13 @@ begin
 
     if messagedlg(rsTryTutorial, mtConfirmation, [mbYes, mbNo], 0) = mrYes then
     {$ifdef darwin}
-      MenuItem12.click;
+      miTutorial64.click;
     {$else}
+      {$ifdef cpu32}
       miTutorial.Click;
+      {$else}
+      miTutorial64.Click;
+      {$endif}
     {$endif}
   end;
 
@@ -8535,6 +8891,11 @@ begin
   end;
 
   ActivePreviousResultColumn:=2;
+
+  if runningAsAdmin then
+    caption:=caption+' (Admin)';
+
+  askAboutRunningAsAdmin:=true;
 
 end;
 
@@ -9585,10 +9946,7 @@ procedure TMainForm.UpdateFoundlisttimerTimer(Sender: TObject);
 begin
 
   if foundlist <> nil then
-  begin
     foundlist.RefetchValueList;
-    foundlist3.Refresh;
-  end;
 end;
 
 procedure TMainForm.Foundlist3KeyDown(Sender: TObject; var Key: word;
@@ -9614,6 +9972,12 @@ end;
 
 procedure TMainForm.miTutorialClick(Sender: TObject);
 begin
+  if not fileexists(cheatenginedir+{$ifdef altname}'rtmtutorial-i386.exe'{$else}'Tutorial-i386.exe'{$endif}) then
+  begin
+    if fileexists(cheatenginedir+{$ifdef altname}'rtmtutorial-i386.cepack'{$else}'Tutorial-i386.cepack'{$endif}) then
+      ceunpackfile(cheatenginedir+{$ifdef altname}'rtmtutorial-i386.cepack'{$else}'Tutorial-i386.cepack'{$endif}, cheatenginedir+{$ifdef altname}'rtmtutorial-i386.exe'{$else}'Tutorial-i386.exe'{$endif}, false);
+  end;
+
   shellexecute(0, 'open', pchar(cheatenginedir+{$ifdef altname}'rtmtutorial-i386.exe'{$else}'Tutorial-i386.exe'{$endif}), nil, nil, sw_show);
 end;
 
@@ -10047,6 +10411,7 @@ begin
     memscan.luaformula:=cbLuaFormula.visible and cbLuaFormula.checked;
     memscan.NewLuaState:=cbNewLuaState.Checked;
     memscan.busyformIsModal:=true;
+    memscan.workingsetonly:=(getConnection=nil) and cbPresentMemoryOnly.checked;  //workingsetonly is false when networked
 
     memscan.firstscan(GetScanType2, getVarType2, roundingtype,
       scanvalue.Text, svalue2, scanStart, scanStop,
@@ -10515,7 +10880,11 @@ begin
       if speedhack <> nil then
         FreeAndNil(speedhack);
 
-      ss:=GetKeyShiftState;
+      IF (GetKeyState(VK_MBUTTON) and $8000)=$8000 THEN
+      begin
+        outputdebugstring('bla');
+        raise exception.create('Using alternate method');
+      end;
 
 
       speedhack := TSpeedhack.Create;
@@ -10563,6 +10932,7 @@ var
 
   tempicon: Graphics.TIcon;
   tempp: tpicture;
+  p: integer;
 
 begin
   //fill with processlist
@@ -10585,11 +10955,21 @@ begin
       j := sl.Count - 1 - i;
       currentmi := TMenuItemExtra.Create(self);
       currentmi.Caption := sl[i];
-      currentmi.Default := dword(sl.Objects[i]) = ProcessID;
+      {$ifdef windows}
+      currentmi.Default := dword(ptrUint(PProcessListInfo(sl.Objects[i])^.processid)) = ProcessID;
       currentmi.Data := pointer(ptrUint(PProcessListInfo(sl.Objects[i])^.processid));
+      {$else}
+      if TryStrToInt('$'+copy(sl[i],1,pos('-',sl[i])), p) then
+      begin
+        currentmi.Data := pointer(p);
+        currentmi.default:=p=processid;
+      end;
+      {$endif}
+
       currentmi.OnClick := ProcessItemClick;
 
 
+      {$IFDEF WINDOWS}
       if PProcessListInfo(sl.Objects[i])^.processIcon > 0 then
       begin
         tempicon := Graphics.TIcon.Create;
@@ -10603,6 +10983,7 @@ begin
         tempicon.free;
       end
       else
+      {$ENDIF}
         currentmi.ImageIndex := -1;
 
       mi[j] := currentmi;
@@ -10781,7 +11162,15 @@ procedure TMainForm.DoGroupconfigButtonClick(sender: tobject);
 var gcf: TfrmGroupScanAlgoritmGenerator;
 begin
   gcf:=TfrmGroupScanAlgoritmGenerator.create(self);
-  gcf.parseParameters(scanvalue.text);
+  try
+    gcf.parseParameters(scanvalue.text);
+  except
+    on e:exception do
+    begin
+      MessageDlg(e.message,mtError,[mbok],0);
+      exit;
+    end;
+  end;
 
   if gcf.showmodal=mrok then
     scanvalue.text:=gcf.getparameters;

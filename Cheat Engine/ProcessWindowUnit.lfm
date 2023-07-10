@@ -140,9 +140,9 @@ object ProcessWindow: TProcessWindow
     Height = 270
     Top = 0
     Width = 285
-    ActivePage = tsProcesses
+    ActivePage = tsWindows
     Align = alClient
-    TabIndex = 1
+    TabIndex = 2
     TabOrder = 2
     OnChange = TabHeaderChange
     OnResize = TabHeaderResize
@@ -157,10 +157,12 @@ object ProcessWindow: TProcessWindow
     end
   end
   object ProcessList: TListBox
+    AnchorSideTop.Control = TabHeader
     Left = 8
-    Height = 208
-    Top = 32
+    Height = 256
+    Top = 24
     Width = 267
+    Anchors = [akLeft]
     BorderStyle = bsNone
     ItemHeight = 0
     OnDblClick = OKButtonClick

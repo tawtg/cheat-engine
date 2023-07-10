@@ -1,4 +1,128 @@
-ctrl+space to sync disasembler with hexview is broken
+ceserver debug: add option to exclude some threads from debugging
+
+fix jvmti on windows (I messed up the lua)
+
+.net info: getting the classlist takes long and it looks like nothing happens, and seems to wait till the symbol enum is done
+.net info: add some grouped commands for data gathering
+.net info: add option to skip the value fetcher
+.net info: lookup instances should grey the button while the scan is going, and when done, dropdown the list for you
+.net info: instance lookup: verify that pointers are actually null or point to a valid location (preferably of the correct classtype?), and booleans can only be 0 or 1
+.net info: when il2cpp is being scanned, add a rightclick to the label at the bottom of ce's main screen that shows the progress, to cancel the enum
+.net info: Make the static fields list also a virtualstringtree
+
+ceserver:  accept new .elf files inside .apk.>0
+CE connected to ceserver: Hide "Active memory only" option(s)
+
+ceserver: did a binary scan. froze at the end
+ceserver: did an aobscan (exec, ignore rest). froze at the end
+ceserver: when debugging, also use multibyte writes using the available apis
+
+processwindow: When going to the network window and connect, and then cancel because the server is down, then the proceslist has lost it's tabs
+
+autoassembler: add autocomplete for stuff like createthread, alloc, etc...
+autoassembler: Add a checkbox or something so it won't ask if you wish to keep certain symbols (always yes/always no?)
+
+ceserver: try to demangle names (register both manged and demangled names)
+
+symhandler: if _errno can't be found, look for a __errno instead (android thing)
+
+enumerate dll's doesn't show some value entries like _ZN3art7Runtime9instance_E
+
+lua engine code completion: string..get<ctrl+space> doesn't work. needs string.. get<ctrl+space> change it to .. does work
+lua engine debug: highlight over array[index].name doesn't get the value. (Check if it is a table, and if so, get the table and then query the field)
+lua engine debug: highlight over a table shows the table, but if you highlight table[index] it still shows the whole table instead of just that indexed entry
+
+{$c}/{ccode}:  Provide a list of warnings
+{$c}/{$ccode}: fix kernel allocation
+
+codelist: Replace with nops: If a module in the list doesn't exist (or different process) an error is shown and it won't nop
+codelist: replace with nops: if the address is already in the list it'll ask to add again.  It should just nop
+
+
+AddressList : Make check expand/collapse icons dpi aware
+
+addresslist: Make script entries have an address if requested (so that mr.Value can be compared in a script's timer)
+
+lua doesn't show errors anymore if the error is inside a component/luacaller   e.g: blax==nil and then blax.xxxx();
+for class fetching in java for android, add a downloadbar/progressbar
+
+processlist with ceserver: rightclick refresh does nothing
+
+ceserver: Add a pthread_create call that can be done without .so injection (so c-code can run all by itself)
+
+
+memscan lua formula scan: value>oldvalue+1000 and value<oldvalue+2000 crashes CE  : value>previousvalue+1000 and value<previousvalue+2000 works  So: add syntaxchecking with values before starting the scan
+
+auto assembler: 6 byte jmp option where CE will do a scan for a 8 byte codecave
+auto assembler: 5 byte jmp option where CE will do a scan for a 14 byte codecave
+DPI: form designer: anchor editor has crappy size on first time show
+
+java info: expand arrays (max 20 or so)
+
+form editor: add an order change option (not just bring to front/send to back)
+form editor: deleting a column from a listview keeps it in the object inspector
+form editor: when loading a form, the save dialog still points to the old one. Change that to the newly loaded formname
+form editor: save objectinspector treeview height
+
+binary type hotkey: increase value by doesn't work
+
+ceshare list filter search has an error
+
+macos: luaserver
+macos: pointerscan column click sorting
+
+vehdebug: ccode version
+
+table lua script: ctrl+space completion
+executeCodeLocalEx fails when no parameters are given
+
+dbvm: switch emu yuzu fails to load any game when dbvm is running
+
+dpi: change address dialog: sizefield is too small
+
+signature: resize signature (new version sig?)
+
+add table specific settings. E.g: show errors when activating table
+
+ceshare: search gives errors
+
+file->assign to cheat table with lua code gives error if no dll is injected yet  (todo2: luaclient stuff to injected c code)
+
+
+---
+
+dbvm: Change memory while on a breakpoint doesn't seem to apply it to the cloaked page
+
+
+
+single hotkey keys sometimes stuck? sunbeam
+type isn't saved on headers...
+
+tracer search: keyboard focus should be on the input field
+
+
+implement {$nonops} so it rewrites the instruction to force the correct size and then reassembles from the start
+
+
+dbvm cloak: amd pageboundaries (maybe single step issue)
+test nmi's in windows in dbvm
+
+mac: hexview: implement meta+v for pasting
+mac: all modules are seen as 32-bit on a aarch64 target
+mac: aarch64 disassembler (addresses/labels should use the symbolhander)
+
+
+fontcolor in ultimap2 edit fields for seconds and filesize is wrong in dark mode
+
+check if the system uses 'efficient' cores and if so, do not force the scans to use those affinity
+
+luacode and ccode in macos (ccode likely uses windows calling convention)
+
+
+ultimap2 default view is too small for high dpi
+
+import list of instructions from "what accesses this" into ultimap
+
 
 frmregisters seems to have the wrong values
 autoassemble execute seems to do a full symbollist enum ?
@@ -33,10 +157,15 @@ mac: memview/disassembler updates in a seperate thread and only render when done
 hexview: Select bytes->show disassembly (easy shortcut)
 
 vehdebug on tutorial-i386 fails (dll inject crashes tutorial)
-.net info: invoke method: String  (need to create a sting obnject from string)
+.net info: invoke method: String  (need to create a sting object from string)
 
-.net info: doubleclick on type of a field brings you to that type
-.net info: typing in the classes search should wait 250 ms before scanning fore the input.  (really improve smoothess in general)
+.net info: doubleclick on type of a field brings you to that type (in a new window, and if the value field is valid, set the address to that value)
+.net info: mono: editing the System.Boolean type doesn't work
+.net info: spawn the structure dissect window from the field list
+.net info: Rightclick option: copy value to clipboard
+
+
+
 structure dissect : Nested structure
 
 Hexview typelink/colors
