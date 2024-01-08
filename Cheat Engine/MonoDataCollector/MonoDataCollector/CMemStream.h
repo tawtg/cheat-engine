@@ -1,4 +1,5 @@
-#pragma once
+#ifndef CMEMSTREAM_H
+#define CMEMSTREAM_H
 
 //I couldn't quickly find a TMemoryStream equivalent in tyhe c++ stds library that wasn't marked as deprecated, so here's my version of the wheel
 #include <stdlib.h>
@@ -8,7 +9,7 @@
 #endif
 
 #ifndef _WINDOWS
-#ifdef _APPLE_
+#ifdef __APPLE__
 #include "macport.h"
 #else
 #include "linuxport.h"
@@ -46,3 +47,4 @@ public:
 	~CMemStream();
 };
 
+#endif
